@@ -1,0 +1,13 @@
+# Compiled binaries
+dicomtool.exe
+dicomtool-linux
+dicomtool-mac-x64
+dicomtool-mac-arm64
+gendoc.exe
+*.exe
+
+# Claude Code session data
+.claude/
+
+# Local logs
+InstallationLog.txt
