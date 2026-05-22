@@ -143,6 +143,52 @@ func (d *Doc) Table(rows []Row) {
 	d.w(`</w:tbl><w:p/>`)
 }
 
+// ── Formatter interface ───────────────────────────────────────────────────────
+
+type Formatter interface {
+	TitleP(string)
+	SubtitleP(string)
+	H1(string)
+	H2(string)
+	H3(string)
+	P(string)
+	Bullet(string)
+	Code(string)
+	Table([]Row)
+	Space()
+	PageBreak()
+}
+
+// ── Markdown builder ──────────────────────────────────────────────────────────
+
+type MDDoc struct{ b strings.Builder }
+
+func (d *MDDoc) w(s string) { d.b.WriteString(s) }
+func (d *MDDoc) TitleP(text string)    { d.w("# " + text + "\n\n") }
+func (d *MDDoc) SubtitleP(text string) { d.w("**" + text + "**\n\n") }
+func (d *MDDoc) H1(text string)        { d.w("\n## " + text + "\n\n") }
+func (d *MDDoc) H2(text string)        { d.w("\n### " + text + "\n\n") }
+func (d *MDDoc) H3(text string)        { d.w("\n#### " + text + "\n\n") }
+func (d *MDDoc) P(text string)         { d.w(mdStripBackticks(text) + "\n\n") }
+func (d *MDDoc) Bullet(text string)    { d.w("- " + mdStripBackticks(text) + "\n") }
+func (d *MDDoc) Space()                {}
+func (d *MDDoc) PageBreak()            { d.w("\n---\n\n") }
+func (d *MDDoc) Code(text string)      { d.w("```\n" + text + "\n```\n\n") }
+func (d *MDDoc) Table(rows []Row) {
+	if len(rows) == 0 {
+		return
+	}
+	d.w("| " + rows[0].A + " | " + rows[0].B + " |\n")
+	d.w("|---|---|\n")
+	for _, row := range rows[1:] {
+		d.w("| " + row.A + " | " + row.B + " |\n")
+	}
+	d.w("\n")
+}
+
+// mdStripBackticks preserves backtick-delimited spans as inline code.
+func mdStripBackticks(text string) string { return text }
+
 // ── Static XML parts ──────────────────────────────────────────────────────────
 
 const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -333,14 +379,14 @@ const stylesXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 // Document content
 
-func buildContent(d *Doc) {
+func buildContent(d Formatter) {
 
 	// Title page
 	d.Space()
 	d.Space()
 	d.Space()
 	d.TitleP("dicomtool")
-	d.SubtitleP("Usage Manual  v1.1.3")
+	d.SubtitleP("Usage Manual  v1.1.4")
 	d.Space()
 	d.P("A command-line utility for inspecting and modifying DICOM medical imaging files.")
 	d.PageBreak()
@@ -914,6 +960,16 @@ func buildContent(d *Doc) {
 // ── main ──────────────────────────────────────────────────────────────────────
 
 func main() {
+	// Generate Markdown
+	md := &MDDoc{}
+	buildContent(md)
+	mdOut := "dicomtool-manual.md"
+	if err := os.WriteFile(mdOut, []byte(md.b.String()), 0o644); err != nil {
+		panic(err)
+	}
+	fmt.Println("written:", mdOut)
+
+	// Generate DOCX
 	d := &Doc{}
 	buildContent(d)
 
@@ -950,9 +1006,9 @@ func main() {
 	if err := zw.Close(); err != nil {
 		panic(err)
 	}
-	out := "dicomtool-manual.docx"
-	if err := os.WriteFile(out, buf.Bytes(), 0o644); err != nil {
+	docxOut := "dicomtool-manual.docx"
+	if err := os.WriteFile(docxOut, buf.Bytes(), 0o644); err != nil {
 		panic(err)
 	}
-	fmt.Println("written:", out)
+	fmt.Println("written:", docxOut)
 }

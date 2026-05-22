@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.1.4
+
+### Added
+
+#### MSYS2 MinGW64 Build Scripts
+- Added `build-release.sh` — cross-compiles for all four target platforms (Windows amd64, Linux amd64, macOS x64, macOS arm64) with `-ldflags="-s -w"` to strip debug symbols. Requires MSYS2 MinGW64 shell.
+- Added `build-debug.sh` — Windows-only debug build (no strip flags), for use during development.
+
+---
+
 ## v1.1.3
 
 ### Improvements
