@@ -1269,3 +1269,49 @@ Defines two built-in profiles. `base-anon` is a comprehensive de-identification 
 }
 ```
 
+
+---
+
+
+## Credits
+
+
+### Developer
+
+Jeffrey Leal
+
+Email: jeffrey.leal@gmail.com
+
+GitHub: https://github.com/jeffrey-leal
+
+
+### AI Assistance
+
+This application was designed and developed with the assistance of Claude Sonnet 4.6 by Anthropic, accessed through Claude Code (https://claude.ai/code).
+
+Contributions made with AI assistance include:
+
+- Application architecture and Go source code
+- Cobra CLI framework integration and command structure
+- DICOM tag inspection, modification, and VR correction logic
+- Profile system design and de-identification workflow
+- Tag alias and default configuration file content
+- Build scripts and cross-compilation configuration
+- User manual, changelog, and project documentation
+
+### DICOM Standard Reference
+
+Protocol implementation and data dictionary usage follow the DICOM Standard published by NEMA:
+
+DICOM PS3 (2024b) — https://dicom.nema.org/medical/dicom/current
+
+
+### Open-Source Libraries
+
+| Library | Purpose |
+|---|---|
+| `github.com/spf13/cobra` v1.10.2 | CLI framework — command routing, flag parsing, help generation |
+| `github.com/suyashkumar/dicom` v1.1.0 | DICOM file parsing, data dictionary, and element model |
+
+A full list of all transitive dependencies and their versions is recorded in `go.sum`.
+

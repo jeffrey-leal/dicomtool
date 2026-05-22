@@ -955,6 +955,39 @@ func buildContent(d Formatter) {
 	d.H2("A.2  profiles.json")
 	d.P("Defines two built-in profiles. `base-anon` is a comprehensive de-identification baseline: it sets patient identity fields to anonymous values, masks the date of birth to year only, removes private tags, and removes tags commonly associated with identifying information. `anon-img` derives from `base-anon` and additionally skips Secondary Capture, Overlay, Presentation State, and Structured Report objects.")
 	d.Code("{\n  \"base-anon\": {\n    \"set\": [\n      \"PatientName=ANON\",\n      \"PatientID=ANON\",\n      \"AccessionNumber=\",\n      \"ConfidentialityCode=Y\"\n    ],\n    \"remove\": [\n      \"8,80\",   \"8,81\",   \"8,90\",   \"8,92\",   \"8,94\",\n      \"8,1010\", \"8,1032\", \"8,1040\", \"8,1048\", \"8,1050\",\n      \"8,1060\", \"8,1070\", \"8,1080\", \"8,1100\", \"8,1110\",\n      \"10,21\",  \"10,22\",  \"10,24\",\n      \"10,1000\",\"10,1001\",\"10,1002\",\"10,1005\",\"10,1010\",\n      \"10,1040\",\"10,1050\",\"10,1060\",\"10,1080\",\"10,1090\",\n      \"10,2000\",\"10,2110\",\"10,2150\",\"10,2152\",\"10,2154\",\n      \"10,2155\",\"10,2297\",\"10,2298\",\"10,2299\",\n      \"10,3020\",\"10,4000\",\"10,21B0\",\"10,21F0\",\n      \"18,1400\",\"18,1401\",\n      \"20,4000\",\n      \"28,300\",\n      \"32,1031\",\"32,1032\",\"32,1033\",\n      \"38,10\",  \"38,300\", \"38,400\", \"38,500\", \"38,4000\",\n      \"40,275\", \"40,1001\",\"40,1002\",\"40,1004\",\"40,1005\",\n      \"40,2008\",\"40,2009\",\"40,2010\",\"40,2011\",\"40,2016\",\n      \"40,2017\",\"40,2400\",\"40,4006\",\"40,4009\",\"40,4010\",\n      \"40,4020\",\"40,4021\",\"40,A057\",\"40,A060\",\"40,A066\",\n      \"40,A067\",\"40,A068\",\"40,A070\",\"40,A073\",\"40,A075\",\n      \"40,A078\",\"40,A123\",\"40,A160\",\"40,A730\",\n      \"50,10\",\n      \"70,1\",   \"70,2\",   \"70,3\",   \"70,4\",   \"70,5\",\n      \"70,6\",   \"70,8\",   \"70,9\",   \"70,10\",  \"70,11\",\n      \"70,12\",  \"70,13\",  \"70,14\",  \"70,80\",  \"70,81\",\n      \"70,82\",  \"70,83\",  \"70,84\",  \"70,207\", \"70,208\",\n      \"70,209\", \"70,303\",\n      \"72,2\",   \"72,4\",   \"72,6\",   \"72,8\",   \"72,A\",\n      \"72,C\",   \"72,E\",   \"72,10\",\n      \"400,100\",\"400,105\",\"400,110\",\"400,115\",\"400,120\",\n      \"400,402\",\"400,403\",\"400,404\",\"400,561\",\"400,562\",\n      \"400,563\",\"400,564\",\"400,565\",\n      \"2030,20\",\n      \"2110,10\",\"2110,20\",\"2110,30\",\n      \"2200,1\", \"2200,2\"\n    ],\n    \"dob\":       \"YYYY0101\",\n    \"noprivate\": true,\n    \"fixvr\":     \"correct\"\n  },\n  \"anon-img\": {\n    \"base\":           \"base-anon\",\n    \"ignoretype\":     [\"SECONDARY\"],\n    \"ignoremodality\": [\"SC\", \"OT\", \"PR\", \"SR\"]\n  }\n}")
+
+	// ── Credits ───────────────────────────────────────────────────────────────
+	d.PageBreak()
+	d.H1("Credits")
+
+	d.H2("Developer")
+	d.P("Jeffrey Leal")
+	d.P("Email: jeffrey.leal@gmail.com")
+	d.P("GitHub: https://github.com/jeffrey-leal")
+
+	d.H2("AI Assistance")
+	d.P("This application was designed and developed with the assistance of Claude Sonnet 4.6 by Anthropic, accessed through Claude Code (https://claude.ai/code).")
+	d.P("Contributions made with AI assistance include:")
+	d.Bullet("Application architecture and Go source code")
+	d.Bullet("Cobra CLI framework integration and command structure")
+	d.Bullet("DICOM tag inspection, modification, and VR correction logic")
+	d.Bullet("Profile system design and de-identification workflow")
+	d.Bullet("Tag alias and default configuration file content")
+	d.Bullet("Build scripts and cross-compilation configuration")
+	d.Bullet("User manual, changelog, and project documentation")
+
+	d.H2("DICOM Standard Reference")
+	d.P("Protocol implementation and data dictionary usage follow the DICOM Standard published by NEMA:")
+	d.P("DICOM PS3 (2024b) — https://dicom.nema.org/medical/dicom/current")
+
+	d.H2("Open-Source Libraries")
+	d.Table([]Row{
+		{"Library", "Purpose"},
+		{"`github.com/spf13/cobra` v1.10.2", "CLI framework — command routing, flag parsing, help generation"},
+		{"`github.com/suyashkumar/dicom` v1.1.0", "DICOM file parsing, data dictionary, and element model"},
+	})
+	d.Space()
+	d.P("A full list of all transitive dependencies and their versions is recorded in `go.sum`.")
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
