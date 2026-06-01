@@ -386,7 +386,7 @@ func buildContent(d Formatter) {
 	d.Space()
 	d.Space()
 	d.TitleP("dicomtool")
-	d.SubtitleP("Usage Manual  v1.1.4")
+	d.SubtitleP("Usage Manual  v1.2.0")
 	d.Space()
 	d.P("A command-line utility for inspecting and modifying DICOM medical imaging files.")
 	d.PageBreak()
@@ -642,8 +642,9 @@ func buildContent(d Formatter) {
 	d.P("Profiles are intended to capture a recurring workflow -- for example a de-identification recipe -- so it can be applied consistently without retyping long parameter lists.")
 
 	d.H2("6.2  File Format")
-	d.Code("{\n  \"anonymize\": {\n    \"set\":            [\"0010,0010=ANON\", \"0010,0020=ANON\", \"0008,0050=\"],\n    \"remove\":         [\"0008,0080\", \"0008,0081\"],\n    \"dob\":            \"YYYY0101\",\n    \"uid\":            \"9999\",\n    \"noprivate\":      true,\n    \"maskrows\":       0,\n    \"ignoretype\":     [\"SECONDARY\"],\n    \"ignoremodality\": [\"SC\", \"PR\"],\n    \"fixvr\":          \"correct\",\n    \"dicomdir\":       false,\n    \"verbose\":        false\n  }\n}")
+	d.Code("{\n  \"anonymize\": {\n    \"set\":            [\"0010,0010=ANON\", \"0010,0020=ANON\", \"0008,0050=\"],\n    \"remove\":         [\"0008,0080\", \"0008,0081\"],\n    \"keep\":           [],\n    \"dob\":            \"YYYY0101\",\n    \"uid\":            \"9999\",\n    \"noprivate\":      true,\n    \"keepprivate\":    false,\n    \"maskrows\":       0,\n    \"ignoretype\":     [\"SECONDARY\"],\n    \"ignoremodality\": [\"SC\", \"PR\"],\n    \"fixvr\":          \"correct\",\n    \"dicomdir\":       false,\n    \"verbose\":        false,\n    \"per-modality\":   {}\n  }\n}")
 	d.P("All fields are optional. Omitted fields take their command-line defaults.")
+	d.P("The `keep` field lists tags that are excluded from the removal list. The `keepprivate` field suppresses `noprivate` for files processed by this profile. The `per-modality` field maps DICOM Modality values to override settings applied only to files of that modality (see Section 6.7).")
 	d.P("The full content of the default `profiles.json` is reproduced in Appendix A.")
 
 	d.H2("6.3  CLI Override Precedence")
@@ -670,11 +671,13 @@ func buildContent(d Formatter) {
 		{"Parameter type", "Merge rule"},
 		{"`dob`, `uid`", "Derived value wins if non-empty; otherwise base value is used."},
 		{"`maskrows`", "Derived value wins if greater than zero; otherwise base value is used."},
-		{"`noprivate`, `dicomdir`, `verbose`", "OR'd: either base or derived being true activates the flag."},
+		{"`noprivate`, `dicomdir`, `verbose`, `keepprivate`", "OR'd: either base or derived being true activates the flag."},
 		{"`set`", "Per-tag precedence. Derived profile wins for any tag it defines; base contributes remaining tags."},
 		{"`remove`", "Union of both lists, deduplicated."},
+		{"`keep`", "Tags listed in the derived profile's `keep` list are removed from the merged `remove` list. A derived profile can restore tags that a parent removes."},
 		{"`ignoretype`, `ignoremodality`", "Union of both lists, deduplicated (case-insensitive)."},
 		{"`fixvr`", "Derived value wins if non-empty; otherwise base value is used."},
+		{"`per-modality`", "Maps are merged per modality key. Derived entry wins for any modality it defines; base contributes remaining modalities. Entries for the same modality are themselves merged using these same rules."},
 	})
 	d.P("Base chains may be arbitrarily deep (profile A bases on B, which bases on C, and so on). Circular references are detected and reported as an error.")
 
@@ -687,6 +690,25 @@ func buildContent(d Formatter) {
 	d.P("To store an empty value for a tag (e.g. to blank the Accession Number), use `set:<tag>=` with nothing after the `=` sign:")
 	d.Code("dicomtool profiles add anonymize set:AccessionNumber=")
 	d.P("This stores `\"0008,0050=\"` in the profile's set list, which causes the tag to be written as an empty string when the profile is applied.")
+
+	d.H2("6.7  Per-Modality Overrides")
+	d.P("A profile can define different processing rules for individual DICOM modalities using the `per-modality` field. When a file is processed, its Modality tag (0008,0060) is checked against the map; if a matching entry exists, its settings are layered on top of the base profile settings for that file only.")
+	d.P("Per-modality overrides are additive: they do not replace the base profile, they extend it. The supported fields within a per-modality entry are: `set`, `remove`, `keep`, `keepprivate`, `dob`, `uid`, `fixvr`, `maskrows`, and `noprivate`. The `per-modality` and `base` fields are not supported inside a per-modality entry.")
+	d.P("Modality keys are matched case-insensitively. Tag aliases are resolved the same way as in top-level profile fields.")
+	d.P("Merge rules for per-modality overrides (applied at runtime, per file):")
+	d.Table([]Row{
+		{"Field", "Behaviour when modality matches"},
+		{"`set`", "Override entries win per tag; base profile tags not overridden are kept."},
+		{"`remove`", "Union with base removals. Override adds to the list."},
+		{"`keep`", "Tags listed are subtracted from the combined removal list. Use to restore a tag that the base profile removes for all other modalities."},
+		{"`keepprivate: true`", "Suppresses `noprivate` for matched files, even when the base profile enables it. Lets private tags be preserved for a specific modality."},
+		{"`noprivate: true`", "Forces private tag removal for matched files, even if the base profile does not enable it."},
+		{"`dob`, `uid`, `fixvr`", "Replaces the base value when non-empty."},
+		{"`maskrows`", "Replaces the base value when greater than zero."},
+	})
+	d.P("Example — remove Image Type for all modalities except MR; strip private tags everywhere except PT:")
+	d.Code("{\n  \"study-deident\": {\n    \"set\":       [\"PatientName=ANON\", \"PatientID=ANON\"],\n    \"remove\":    [\"8,8\"],\n    \"noprivate\": true,\n    \"fixvr\":     \"correct\",\n    \"per-modality\": {\n      \"MR\": {\n        \"keep\": [\"8,8\"]\n      },\n      \"PT\": {\n        \"keepprivate\": true\n      },\n      \"CT\": {\n        \"remove\": [\"18,1400\", \"18,1401\"],\n        \"set\":    [\"Manufacturer=\"]\n      }\n    }\n  }\n}")
+	d.P("When `verbose:true` is active, a line is printed for each file that triggers a per-modality override, identifying the modality key that was matched. This provides an audit trail for de-identification workflows.")
 
 	// 7. Configuration Files
 	d.H1("7  Configuration Files")

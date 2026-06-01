@@ -1,6 +1,6 @@
 # dicomtool
 
-**Usage Manual  v1.1.4**
+**Usage Manual  v1.2.0**
 
 A command-line utility for inspecting and modifying DICOM medical imaging files.
 
@@ -514,20 +514,25 @@ Profiles are intended to capture a recurring workflow -- for example a de-identi
   "anonymize": {
     "set":            ["0010,0010=ANON", "0010,0020=ANON", "0008,0050="],
     "remove":         ["0008,0080", "0008,0081"],
+    "keep":           [],
     "dob":            "YYYY0101",
     "uid":            "9999",
     "noprivate":      true,
+    "keepprivate":    false,
     "maskrows":       0,
     "ignoretype":     ["SECONDARY"],
     "ignoremodality": ["SC", "PR"],
     "fixvr":          "correct",
     "dicomdir":       false,
-    "verbose":        false
+    "verbose":        false,
+    "per-modality":   {}
   }
 }
 ```
 
 All fields are optional. Omitted fields take their command-line defaults.
+
+The `keep` field lists tags that are excluded from the removal list. The `keepprivate` field suppresses `noprivate` for files processed by this profile. The `per-modality` field maps DICOM Modality values to override settings applied only to files of that modality (see Section 6.7).
 
 The full content of the default `profiles.json` is reproduced in Appendix A.
 
@@ -571,11 +576,13 @@ Merge rules for base inheritance:
 |---|---|
 | `dob`, `uid` | Derived value wins if non-empty; otherwise base value is used. |
 | `maskrows` | Derived value wins if greater than zero; otherwise base value is used. |
-| `noprivate`, `dicomdir`, `verbose` | OR'd: either base or derived being true activates the flag. |
+| `noprivate`, `dicomdir`, `verbose`, `keepprivate` | OR'd: either base or derived being true activates the flag. |
 | `set` | Per-tag precedence. Derived profile wins for any tag it defines; base contributes remaining tags. |
 | `remove` | Union of both lists, deduplicated. |
+| `keep` | Tags listed in the derived profile's `keep` list are removed from the merged `remove` list. A derived profile can restore tags that a parent removes. |
 | `ignoretype`, `ignoremodality` | Union of both lists, deduplicated (case-insensitive). |
 | `fixvr` | Derived value wins if non-empty; otherwise base value is used. |
+| `per-modality` | Maps are merged per modality key. Derived entry wins for any modality it defines; base contributes remaining modalities. Entries for the same modality are themselves merged using these same rules. |
 
 Base chains may be arbitrarily deep (profile A bases on B, which bases on C, and so on). Circular references are detected and reported as an error.
 
@@ -600,6 +607,54 @@ dicomtool profiles add anonymize set:AccessionNumber=
 ```
 
 This stores `"0008,0050="` in the profile's set list, which causes the tag to be written as an empty string when the profile is applied.
+
+
+### 6.7  Per-Modality Overrides
+
+A profile can define different processing rules for individual DICOM modalities using the `per-modality` field. When a file is processed, its Modality tag (0008,0060) is checked against the map; if a matching entry exists, its settings are layered on top of the base profile settings for that file only.
+
+Per-modality overrides are additive: they do not replace the base profile, they extend it. The supported fields within a per-modality entry are: `set`, `remove`, `keep`, `keepprivate`, `dob`, `uid`, `fixvr`, `maskrows`, and `noprivate`. The `per-modality` and `base` fields are not supported inside a per-modality entry.
+
+Modality keys are matched case-insensitively. Tag aliases are resolved the same way as in top-level profile fields.
+
+Merge rules for per-modality overrides (applied at runtime, per file):
+
+| Field | Behaviour when modality matches |
+|---|---|
+| `set` | Override entries win per tag; base profile tags not overridden are kept. |
+| `remove` | Union with base removals. Override adds to the list. |
+| `keep` | Tags listed are subtracted from the combined removal list. Use to restore a tag that the base profile removes for all other modalities. |
+| `keepprivate: true` | Suppresses `noprivate` for matched files, even when the base profile enables it. Lets private tags be preserved for a specific modality. |
+| `noprivate: true` | Forces private tag removal for matched files, even if the base profile does not enable it. |
+| `dob`, `uid`, `fixvr` | Replaces the base value when non-empty. |
+| `maskrows` | Replaces the base value when greater than zero. |
+
+Example — remove Image Type for all modalities except MR; strip private tags everywhere except PT:
+
+```
+{
+  "study-deident": {
+    "set":       ["PatientName=ANON", "PatientID=ANON"],
+    "remove":    ["8,8"],
+    "noprivate": true,
+    "fixvr":     "correct",
+    "per-modality": {
+      "MR": {
+        "keep": ["8,8"]
+      },
+      "PT": {
+        "keepprivate": true
+      },
+      "CT": {
+        "remove": ["18,1400", "18,1401"],
+        "set":    ["Manufacturer="]
+      }
+    }
+  }
+}
+```
+
+When `verbose:true` is active, a line is printed for each file that triggers a per-modality override, identifying the modality key that was matched. This provides an audit trail for de-identification workflows.
 
 
 ## 7  Configuration Files

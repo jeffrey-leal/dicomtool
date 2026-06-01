@@ -13,18 +13,21 @@ import (
 // runtime via profile:<name>. Fields map directly to the equivalent command-line
 // parameters accepted by the modify command.
 type Profile struct {
-	Base             string   `json:"base,omitempty"`
-	Sets             []string `json:"set,omitempty"`
-	Removes          []string `json:"remove,omitempty"`
-	DOB              string   `json:"dob,omitempty"`
-	UIDSuffix        string   `json:"uid,omitempty"`
-	Priv             bool     `json:"noprivate,omitempty"`
-	Dicomdir         bool     `json:"dicomdir,omitempty"`
-	Verbose          bool     `json:"verbose,omitempty"`
-	MaskRows         int      `json:"maskrows,omitempty"`
-	IgnoreTypes      []string `json:"ignoretype,omitempty"`
-	IgnoreModalities []string `json:"ignoremodality,omitempty"`
-	FixVR            string   `json:"fixvr,omitempty"`
+	Base             string             `json:"base,omitempty"`
+	Sets             []string           `json:"set,omitempty"`
+	Removes          []string           `json:"remove,omitempty"`
+	Keep             []string           `json:"keep,omitempty"`
+	DOB              string             `json:"dob,omitempty"`
+	UIDSuffix        string             `json:"uid,omitempty"`
+	Priv             bool               `json:"noprivate,omitempty"`
+	KeepPrivate      bool               `json:"keepprivate,omitempty"`
+	Dicomdir         bool               `json:"dicomdir,omitempty"`
+	Verbose          bool               `json:"verbose,omitempty"`
+	MaskRows         int                `json:"maskrows,omitempty"`
+	IgnoreTypes      []string           `json:"ignoretype,omitempty"`
+	IgnoreModalities []string           `json:"ignoremodality,omitempty"`
+	FixVR            string             `json:"fixvr,omitempty"`
+	PerModality      map[string]Profile `json:"per-modality,omitempty"`
 }
 
 // ProfileConfig maps profile names to their definitions.
@@ -142,6 +145,52 @@ func mergeProfiles(base, override Profile) Profile {
 		if !seen[r] {
 			seen[r] = true
 			result.Removes = append(result.Removes, r)
+		}
+	}
+
+	// Keep: union, deduplicated.
+	seenK := make(map[string]bool, len(base.Keep)+len(override.Keep))
+	result.Keep = nil
+	for _, k := range append(base.Keep, override.Keep...) {
+		if !seenK[k] {
+			seenK[k] = true
+			result.Keep = append(result.Keep, k)
+		}
+	}
+
+	// KeepPrivate: OR.
+	result.KeepPrivate = base.KeepPrivate || override.KeepPrivate
+
+	// Apply override.Keep to filter result.Removes: a child profile can restore
+	// tags that a parent profile removes.
+	if len(override.Keep) > 0 {
+		keepSet := make(map[string]bool, len(override.Keep))
+		for _, k := range override.Keep {
+			keepSet[strings.ToLower(strings.TrimSpace(k))] = true
+		}
+		filtered := make([]string, 0, len(result.Removes))
+		for _, r := range result.Removes {
+			if !keepSet[strings.ToLower(strings.TrimSpace(r))] {
+				filtered = append(filtered, r)
+			}
+		}
+		result.Removes = filtered
+	}
+
+	// PerModality: merge maps, normalizing keys to uppercase. Override's entries
+	// win per key; if both define the same modality, merge them recursively.
+	if len(base.PerModality) > 0 || len(override.PerModality) > 0 {
+		result.PerModality = make(map[string]Profile, len(base.PerModality)+len(override.PerModality))
+		for k, v := range base.PerModality {
+			result.PerModality[strings.ToUpper(k)] = v
+		}
+		for k, v := range override.PerModality {
+			uk := strings.ToUpper(k)
+			if existing, ok := result.PerModality[uk]; ok {
+				result.PerModality[uk] = mergeProfiles(existing, v)
+			} else {
+				result.PerModality[uk] = v
+			}
 		}
 	}
 
@@ -280,5 +329,15 @@ func mergeProfile(p Profile) {
 		if combined != "" {
 			parsed["ignoremodality"] = []string{combined}
 		}
+	}
+
+	// PerModality: stored directly on Opts for runtime dispatch; not representable
+	// in the string-keyed parsed map. Normalize keys to uppercase.
+	if len(p.PerModality) > 0 && Opts.PerModality == nil {
+		normalized := make(map[string]Profile, len(p.PerModality))
+		for k, v := range p.PerModality {
+			normalized[strings.ToUpper(k)] = v
+		}
+		Opts.PerModality = normalized
 	}
 }

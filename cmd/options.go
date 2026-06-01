@@ -11,11 +11,12 @@ import (
 
 // Options holds parsed global command-line parameters.
 type Options struct {
-	Verbose    bool
-	Output     string
-	Inputs     []string
-	ConfigFile string
-	TagAliases TagConfig
+	Verbose     bool
+	Output      string
+	Inputs      []string
+	ConfigFile  string
+	TagAliases  TagConfig
+	PerModality map[string]Profile
 }
 
 // Opts is the single shared instance populated during argument parsing.

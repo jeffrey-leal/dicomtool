@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.2.0
+
+### New Features
+
+#### Per-Modality Profile Overrides (`per-modality`)
+- Profiles now support a `per-modality` key containing a map of DICOM Modality values (e.g. `"CT"`, `"MR"`, `"PT"`) to override settings applied only when a file of that modality is processed.
+- Override settings layer additively on top of the base profile: `set` entries win per tag, `remove` is unioned, scalars (`dob`, `uid`, `fixvr`, `maskrows`) replace the base value when specified, and `noprivate` is OR'd.
+- Modality keys are matched case-insensitively.
+
+#### Keep List (`keep`)
+- Profiles and per-modality entries now support a `keep` field — a list of tags that are **excluded** from the removal list for that scope.
+- At the profile inheritance level, a derived profile can use `keep` to restore tags that a parent profile removes, without needing to re-specify the entire removal list.
+- At the per-modality level, `keep` allows a specific modality to retain tags that the base profile removes globally (e.g. keep Image Type for MR while removing it for all other modalities).
+
+#### Keep Private Tags for Specific Modalities (`keepprivate`)
+- Per-modality entries (and derived profiles) support `keepprivate: true`, which suppresses `noprivate` for files of that modality.
+- Enables workflows where private tags are stripped globally but preserved for specific modalities that carry diagnostically relevant vendor data in private sequences (e.g. PET reconstruction parameters).
+
+### Bug Fixes
+
+#### Stale `"convert"` References in Test Suite
+- `root_test.go` referenced command name `"convert"` which was renamed to `"modify"` in an earlier release. Both failing tests now use the correct command name.
+
+---
+
 ## v1.1.4
 
 ### Added

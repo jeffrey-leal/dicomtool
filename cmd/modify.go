@@ -134,7 +134,8 @@ func runModify() error {
 	hasAction := len(rawSets) > 0 || len(rawRemoves) > 0 ||
 		dobMask != "" || uidSuffix != "" || maskRows > 0 ||
 		boolParam("noprivate", false) || fixvrMode != "" ||
-		paramOne("ignoretype") != "" || paramOne("ignoremodality") != ""
+		paramOne("ignoretype") != "" || paramOne("ignoremodality") != "" ||
+		len(Opts.PerModality) > 0
 	if !hasAction {
 		return errors.New("at least one actionable parameter is required (set, remove, dob, uid, maskrows, noprivate, ignoretype, ignoremodality) — or specify a profile that contains one")
 	}
@@ -220,6 +221,9 @@ func runModify() error {
 		zw = zip.NewWriter(zf)
 	}
 
+	// Pre-compute per-modality override parameter sets from the profile.
+	perModOverrides := buildModalityOverrides(Opts.PerModality)
+
 	// Phase 1: collect DICOM file paths (fast, serial walk).
 	type fileJob struct{ path, rel string }
 	var jobs []fileJob
@@ -302,7 +306,7 @@ func runModify() error {
 				if srcFile == nil {
 					continue
 				}
-				skipped, ds, perr := processFile(srcFile, edits, removals, dobMask, uidSuffix, removePrivate, maskRows, ignoreTypes, ignoreModalities, fixvrMode)
+				skipped, ds, perr := processFile(srcFile, edits, removals, dobMask, uidSuffix, removePrivate, maskRows, ignoreTypes, ignoreModalities, fixvrMode, perModOverrides)
 				if perr != nil {
 					recordErr(fmt.Errorf("processing %q: %w", job.path, perr))
 					continue
@@ -480,11 +484,105 @@ func fixvrWriteOpts(mode string) []dicom.WriteOption {
 	}
 }
 
+// modalityOverride holds the pre-computed parameter overrides for one modality.
+type modalityOverride struct {
+	edits         []tagEdit
+	removals      []tag.Tag
+	keep          []tag.Tag
+	dobMask       string
+	uidSuffix     string
+	fixvrMode     string
+	maskRows      int
+	removePrivate bool
+	keepPrivate   bool
+}
+
+// buildModalityOverrides converts the per-modality Profile map (already keyed
+// in uppercase) into pre-parsed modalityOverride values ready for runtime use.
+func buildModalityOverrides(perMod map[string]Profile) map[string]modalityOverride {
+	if len(perMod) == 0 {
+		return nil
+	}
+	result := make(map[string]modalityOverride, len(perMod))
+	for mod, p := range perMod {
+		var ov modalityOverride
+		for _, s := range p.Sets {
+			tagStr, value, ok := strings.Cut(s, "=")
+			if !ok || tagStr == "" {
+				continue
+			}
+			t, err := parseTagString(Opts.TagAliases.Resolve(tagStr))
+			if err != nil {
+				continue
+			}
+			ov.edits = append(ov.edits, tagEdit{tag: t, value: value})
+		}
+		for _, r := range p.Removes {
+			t, err := parseTagString(Opts.TagAliases.Resolve(r))
+			if err != nil {
+				continue
+			}
+			ov.removals = append(ov.removals, t)
+		}
+		for _, k := range p.Keep {
+			t, err := parseTagString(Opts.TagAliases.Resolve(k))
+			if err != nil {
+				continue
+			}
+			ov.keep = append(ov.keep, t)
+		}
+		ov.dobMask = p.DOB
+		ov.uidSuffix = p.UIDSuffix
+		ov.fixvrMode = p.FixVR
+		ov.maskRows = p.MaskRows
+		ov.removePrivate = p.Priv
+		ov.keepPrivate = p.KeepPrivate
+		result[mod] = ov
+	}
+	return result
+}
+
+// mergeEdits combines two tagEdit slices; override entries win on tag collision.
+func mergeEdits(base, override []tagEdit) []tagEdit {
+	if len(override) == 0 {
+		return base
+	}
+	overrideTags := make(map[tag.Tag]bool, len(override))
+	for _, e := range override {
+		overrideTags[e.tag] = true
+	}
+	result := make([]tagEdit, 0, len(base)+len(override))
+	for _, e := range base {
+		if !overrideTags[e.tag] {
+			result = append(result, e)
+		}
+	}
+	return append(result, override...)
+}
+
+// filterKeep returns removals with any tag present in keep removed.
+func filterKeep(removals []tag.Tag, keep []tag.Tag) []tag.Tag {
+	if len(keep) == 0 {
+		return removals
+	}
+	keepSet := make(map[tag.Tag]bool, len(keep))
+	for _, t := range keep {
+		keepSet[t] = true
+	}
+	out := make([]tag.Tag, 0, len(removals))
+	for _, t := range removals {
+		if !keepSet[t] {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // processFile parses src, optionally skips secondary-capture files, and applies
 // all edits. It returns (true, zero, nil) when the file should be skipped, or
 // (false, transformed dataset, nil) on success. The caller is responsible for
 // writing the returned dataset to its destination.
-func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uidSuffix string, removePrivate bool, maskRows int, ignoreTypes, ignoreModalities []string, fixvrMode string) (skipped bool, ds dicom.Dataset, err error) {
+func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uidSuffix string, removePrivate bool, maskRows int, ignoreTypes, ignoreModalities []string, fixvrMode string, perModOverrides map[string]modalityOverride) (skipped bool, ds dicom.Dataset, err error) {
 	info, err := src.Stat()
 	if err != nil {
 		src.Close()
@@ -516,6 +614,43 @@ func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uid
 					if strings.EqualFold(component, strings.TrimSpace(ignore)) {
 						return true, ds, nil
 					}
+				}
+			}
+		}
+	}
+
+	// Apply per-modality overrides: layer modality-specific settings on top of
+	// the base parameters before any modifications are applied.
+	if len(perModOverrides) > 0 {
+		if modElem, err := ds.FindElementByTag(modalityTag); err == nil {
+			for _, mod := range elemStringComponents(modElem) {
+				modKey := strings.ToUpper(strings.TrimSpace(mod))
+				if ov, ok := perModOverrides[modKey]; ok {
+					edits = mergeEdits(edits, ov.edits)
+					removals = append(removals, ov.removals...)
+					removals = filterKeep(removals, ov.keep)
+					if ov.dobMask != "" {
+						dobMask = ov.dobMask
+					}
+					if ov.uidSuffix != "" {
+						uidSuffix = ov.uidSuffix
+					}
+					if ov.fixvrMode != "" {
+						fixvrMode = ov.fixvrMode
+					}
+					if ov.maskRows > 0 {
+						maskRows = ov.maskRows
+					}
+					if ov.removePrivate {
+						removePrivate = true
+					}
+					if ov.keepPrivate {
+						removePrivate = false
+					}
+					if Opts.Verbose {
+						fmt.Printf("  [%s override] applied\n", modKey)
+					}
+					break
 				}
 			}
 		}
