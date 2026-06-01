@@ -19,6 +19,7 @@ type Profile struct {
 	Keep             []string           `json:"keep,omitempty"`
 	DOB              string             `json:"dob,omitempty"`
 	UIDSuffix        string             `json:"uid,omitempty"`
+	RemapUIDs        bool               `json:"remapuids,omitempty"`
 	Priv             bool               `json:"noprivate,omitempty"`
 	KeepPrivate      bool               `json:"keepprivate,omitempty"`
 	Dicomdir         bool               `json:"dicomdir,omitempty"`
@@ -120,6 +121,7 @@ func mergeProfiles(base, override Profile) Profile {
 	result.Priv = base.Priv || override.Priv
 	result.Dicomdir = base.Dicomdir || override.Dicomdir
 	result.Verbose = base.Verbose || override.Verbose
+	result.RemapUIDs = base.RemapUIDs || override.RemapUIDs
 
 	// Sets: override wins per tag; base contributes tags not in override.
 	overrideTags := make(map[string]bool, len(override.Sets))
@@ -249,6 +251,9 @@ func mergeProfile(p Profile) {
 	}
 	if p.Verbose && len(parsed["verbose"]) == 0 {
 		parsed["verbose"] = []string{"true"}
+	}
+	if p.RemapUIDs && len(parsed["remapuids"]) == 0 {
+		parsed["remapuids"] = []string{"true"}
 	}
 	// Scalar integer: CLI wins.
 	if p.MaskRows > 0 && len(parsed["maskrows"]) == 0 {

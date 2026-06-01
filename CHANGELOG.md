@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.3.0
+
+### New Features
+
+#### Consistent UID Remapping (`remapuids`)
+- Added `remapuids:true` to the `modify` command. It replaces every study, series, and instance UID — and all references to them — with a freshly generated UID.
+- Remapping is consistent across the entire run: the same source UID always maps to the same new UID in every file, so the study/series/instance hierarchy and all internal cross-references (including `ReferencedSOPInstanceUID` values nested in sequences) are preserved, while linkage back to the source system is severed.
+- SOP Class UIDs, Transfer Syntax UIDs (and the Implementation Class UID) are never remapped, so output files remain valid. New UIDs use the ISO `2.25` UUID-derived root.
+- Unlike `uid:<suffix>` (which appends a reversible suffix), `remapuids` produces irreversible, per-run-random UIDs — the stronger choice for de-identification. The two parameters are mutually exclusive.
+- Available as a profile field (`"remapuids": true`) as well as on the command line.
+
+### Bug Fixes
+
+#### De-identification Now Reaches Nested Sequences
+- `remove`, `noprivate`, and `set` previously operated only on top-level dataset elements. Identifiers nested inside sequences (e.g. `OtherPatientIDsSequence`, Request/Original Attributes Sequences) survived a removal or overwrite the user expected to apply everywhere — a genuine PHI leak.
+- All three operations now recurse into sequences at every nesting depth, matching the behaviour of `fixvr`. `remove` and `noprivate` strip matching/private tags wherever they appear; `set` overwrites every nested occurrence (and still appends once at the top level when the tag is absent, without injecting it into sequence items).
+- This is on by default; no new parameter is required.
+
+### Performance
+
+#### Map-Based Tag Removal
+- The `remove` operation previously scanned every element against the full removal list (O(elements × removals)). It now uses a single map lookup (O(elements)), a clear win for large removal lists such as the `base-deident` profile's ~130 tags.
+
+---
+
 ## v1.2.0
 
 ### New Features

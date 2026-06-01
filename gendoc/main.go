@@ -386,7 +386,7 @@ func buildContent(d Formatter) {
 	d.Space()
 	d.Space()
 	d.TitleP("dicomtool")
-	d.SubtitleP("Usage Manual  v1.2.0")
+	d.SubtitleP("Usage Manual  v1.3.0")
 	d.Space()
 	d.P("A command-line utility for inspecting and modifying DICOM medical imaging files.")
 	d.PageBreak()
@@ -472,7 +472,7 @@ func buildContent(d Formatter) {
 	d.H2("4.2  modify")
 	d.P("Reads every DICOM file under an input directory tree, applies the specified modifications, and writes the results to an output directory, preserving the original folder structure.")
 	d.H3("Syntax")
-	d.Code("dicomtool modify input:<dir> output:<dir>\n    [set:<tag>=<value> ...]\n    [remove:<tag> ...]\n    [dob:<mask>]\n    [uid:<suffix>]\n    [noprivate:true]\n    [ignoretype:<types>]\n    [ignoremodality:<modalities>]\n    [maskrows:<n>]\n    [fixvr:correct|skip|passthrough]\n    [workers:<n>]\n    [zip:true]\n    [dicomdir:true]\n    [profile:<name>]\n    [verbose:true]")
+	d.Code("dicomtool modify input:<dir> output:<dir>\n    [set:<tag>=<value> ...]\n    [remove:<tag> ...]\n    [dob:<mask>]\n    [uid:<suffix>]\n    [remapuids:true]\n    [noprivate:true]\n    [ignoretype:<types>]\n    [ignoremodality:<modalities>]\n    [maskrows:<n>]\n    [fixvr:correct|skip|passthrough]\n    [workers:<n>]\n    [zip:true]\n    [dicomdir:true]\n    [profile:<name>]\n    [verbose:true]")
 	d.H3("Parameters")
 	d.Table([]Row{
 		{"Parameter", "Description"},
@@ -481,7 +481,8 @@ func buildContent(d Formatter) {
 		{"`set:<tag>=<value>`", "Set the specified tag to the given value. `<tag>` may be a raw `GGGG,EEEE` identifier or a defined alias. Repeatable."},
 		{"`remove:<tag>`", "Remove the specified tag entirely from every output file. `<tag>` may be a raw identifier or alias. Repeatable."},
 		{"`dob:<mask>`", "Apply an 8-character positional mask to the Patient Date of Birth field (0010,0030). Digit characters in the mask overwrite the corresponding position; any other character preserves the original digit. Format: `YYYYMMDD`."},
-		{"`uid:<suffix>`", "Append `.<suffix>` to every UID field in each file. If the result would exceed 64 characters the last dot-delimited component is replaced instead of appended. `<suffix>` must contain digits only. Transfer Syntax UIDs are excluded."},
+		{"`uid:<suffix>`", "Append `.<suffix>` to every UID field in each file. If the result would exceed 64 characters the last dot-delimited component is replaced instead of appended. `<suffix>` must contain digits only. Transfer Syntax UIDs are excluded. Mutually exclusive with `remapuids:true`."},
+		{"`remapuids:true`", "Replace every study, series, and instance UID — and all references to them — with a freshly generated UID. Remapping is consistent across the entire run: the same source UID always maps to the same new UID in every file, so study/series/instance relationships and internal cross-references are preserved while linkage to the source is severed. SOP Class UIDs, Transfer Syntax UIDs, and the Implementation Class UID are left unchanged so files remain valid. Cannot be combined with `uid:`."},
 		{"`noprivate:true`", "Remove all private tags (those with an odd group number) before writing output."},
 		{"`ignoretype:<types>`", "Skip files whose Image Type tag (0008,0008) contains any of the supplied comma-delimited values. Comparison is case-insensitive. Example: `ignoretype:SECONDARY,DERIVED`."},
 		{"`ignoremodality:<modalities>`", "Skip files whose Modality tag (0008,0060) matches any of the supplied comma-delimited values. Comparison is case-insensitive. Example: `ignoremodality:SC,PR`."},
@@ -502,7 +503,7 @@ func buildContent(d Formatter) {
 	d.Bullet("5. Remove private tags (if `noprivate:true`)")
 	d.Bullet("6. Apply explicit `remove:` removals")
 	d.Bullet("7. Apply DOB mask (if `dob:` supplied)")
-	d.Bullet("8. Apply UID suffix (if `uid:` supplied)")
+	d.Bullet("8. Apply UID suffix (if `uid:` supplied) or remap UIDs (if `remapuids:true`)")
 	d.Bullet("9. Apply row mask (if `maskrows:` supplied)")
 	d.Bullet("10. Apply all `set:` edits")
 	d.Bullet("11. Write output file to directory, or to the ZIP archive if `zip:true`")
@@ -512,6 +513,7 @@ func buildContent(d Formatter) {
 	d.Code("dicomtool modify input:C:\\original output:C:\\deidentified\n    set:0010,0010=ANONYMOUS set:0010,0020=ID001\n    remove:0008,0080 noprivate:true verbose:true")
 	d.Code("dicomtool modify input:C:\\study output:converted\n    profile:anonymize dicomdir:true")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out\n    set:PatientName=ANON ignoremodality:SC maskrows:10")
+	d.Code("dicomtool modify input:C:\\study output:C:\\deidentified\n    set:PatientName=ANON set:PatientID=ANON\n    noprivate:true remapuids:true")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out\\study.zip zip:true\n    set:PatientName=ANON noprivate:true")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out fixvr:correct\n    set:PatientName=ANON noprivate:true")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out workers:8\n    set:PatientName=ANON noprivate:true")
@@ -549,7 +551,7 @@ func buildContent(d Formatter) {
 
 	d.H3("profiles add")
 	d.P("Creates or completely replaces a profile. Parameters are the same key:value pairs accepted by the `modify` command, excluding `input:`, `output:`, and `profile:`. An optional `base:<name>` parameter may reference an existing profile whose settings are inherited.")
-	d.Code("dicomtool profiles add <name>\n    [base:<name>]\n    [set:<tag>=<value> ...] [remove:<tag> ...]\n    [dob:<mask>] [uid:<suffix>]\n    [noprivate:true] [maskrows:<n>]\n    [dicomdir:true] [verbose:true]")
+	d.Code("dicomtool profiles add <name>\n    [base:<name>]\n    [set:<tag>=<value> ...] [remove:<tag> ...]\n    [dob:<mask>] [uid:<suffix>] [remapuids:true]\n    [noprivate:true] [maskrows:<n>]\n    [dicomdir:true] [verbose:true]")
 	d.Code("dicomtool profiles add anonymize\n    set:PatientName=ANON set:PatientID=ANON set:AccessionNumber=\n    dob:YYYY0101 noprivate:true")
 	d.Code("dicomtool profiles add research base:anonymize set:PatientID=RESEARCH001")
 	d.P("Tag aliases are resolved to raw identifiers at save time, so profiles remain portable even if the alias definitions change later.")
@@ -642,7 +644,7 @@ func buildContent(d Formatter) {
 	d.P("Profiles are intended to capture a recurring workflow -- for example a de-identification recipe -- so it can be applied consistently without retyping long parameter lists.")
 
 	d.H2("6.2  File Format")
-	d.Code("{\n  \"anonymize\": {\n    \"set\":            [\"0010,0010=ANON\", \"0010,0020=ANON\", \"0008,0050=\"],\n    \"remove\":         [\"0008,0080\", \"0008,0081\"],\n    \"keep\":           [],\n    \"dob\":            \"YYYY0101\",\n    \"uid\":            \"9999\",\n    \"noprivate\":      true,\n    \"keepprivate\":    false,\n    \"maskrows\":       0,\n    \"ignoretype\":     [\"SECONDARY\"],\n    \"ignoremodality\": [\"SC\", \"PR\"],\n    \"fixvr\":          \"correct\",\n    \"dicomdir\":       false,\n    \"verbose\":        false,\n    \"per-modality\":   {}\n  }\n}")
+	d.Code("{\n  \"anonymize\": {\n    \"set\":            [\"0010,0010=ANON\", \"0010,0020=ANON\", \"0008,0050=\"],\n    \"remove\":         [\"0008,0080\", \"0008,0081\"],\n    \"keep\":           [],\n    \"dob\":            \"YYYY0101\",\n    \"uid\":            \"9999\",\n    \"remapuids\":      false,\n    \"noprivate\":      true,\n    \"keepprivate\":    false,\n    \"maskrows\":       0,\n    \"ignoretype\":     [\"SECONDARY\"],\n    \"ignoremodality\": [\"SC\", \"PR\"],\n    \"fixvr\":          \"correct\",\n    \"dicomdir\":       false,\n    \"verbose\":        false,\n    \"per-modality\":   {}\n  }\n}")
 	d.P("All fields are optional. Omitted fields take their command-line defaults.")
 	d.P("The `keep` field lists tags that are excluded from the removal list. The `keepprivate` field suppresses `noprivate` for files processed by this profile. The `per-modality` field maps DICOM Modality values to override settings applied only to files of that modality (see Section 6.7).")
 	d.P("The full content of the default `profiles.json` is reproduced in Appendix A.")
@@ -930,6 +932,9 @@ func buildContent(d Formatter) {
 		{"0002,0010", "Transfer Syntax UID"},
 		{"0004,1512", "Referenced Transfer Syntax UID in File"},
 	})
+	d.P("The `uid:<suffix>` operation appends a numeric suffix to UIDs, leaving the original value embedded in the result. This is suitable for lightweight namespacing but is reversible and does not break linkage to the source.")
+	d.P("For de-identification, `remapuids:true` instead replaces each UID with a freshly generated value. Remapping uses a single shared table for the entire run, so the same source UID always maps to the same new UID in every file. This preserves the study/series/instance hierarchy and every internal reference (for example `ReferencedSOPInstanceUID` values nested inside sequences continue to point at the correct, remapped instances) while severing any link back to the originating system. New UIDs use the ISO `2.25` UUID-derived root and are unique per run; re-running the command produces a different set of UIDs.")
+	d.P("UIDs beginning with the DICOM standard root `1.2.840.10008.` (SOP Class UIDs, Transfer Syntax UIDs, and other well-known values), together with the Implementation Class UID (0002,0012), are never remapped because they identify the object type, encoding, and creating software rather than the patient or study. `remapuids:true` and `uid:<suffix>` cannot be used together.")
 
 	d.H2("9.5  Filtering by Modality and Image Type")
 	d.P("Files can be excluded from processing based on their Modality (0008,0060) or Image Type (0008,0008) tags using the `ignoremodality:` and `ignoretype:` parameters. Both accept comma-delimited lists and perform case-insensitive comparisons.")

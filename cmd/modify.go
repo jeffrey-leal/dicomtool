@@ -38,6 +38,12 @@ Parameters:
                             the corresponding position, others preserve it.
   uid:<suffix>              Append .<suffix> to every UID field. Suffix must be
                             digits only [1-9]. Transfer Syntax UIDs are excluded.
+                            Mutually exclusive with remapuids.
+  remapuids:true            Replace every study/series/instance UID (and all
+                            references to them) with a fresh UID, consistently
+                            across the whole run so relationships are preserved.
+                            SOP Class and Transfer Syntax UIDs are kept. Cannot
+                            be combined with uid.
   noprivate:true            Remove all private (odd-group) tags.
   ignoretype:<values>       Skip files whose Image Type (0008,0008) contains any
                             of the comma-delimited values. Case-insensitive.
@@ -57,8 +63,8 @@ Parameters:
   verbose:true              Print per-file progress and a completion summary.
 
 Processing order per file:
-  1. Parse   2. fixvr   3. ignoretype   4. ignoremodality   5. noprivate
-  6. remove  7. dob     8. uid          9. maskrows          10. set   11. write
+  1. Parse   2. fixvr   3. ignoretype     4. ignoremodality   5. noprivate
+  6. remove  7. dob     8. uid/remapuids  9. maskrows          10. set   11. write
 
 Examples:
   dicomtool modify input:C:\in output:C:\out set:PatientName=ANON noprivate:true
@@ -129,15 +135,20 @@ func runModify() error {
 		}
 	}
 
+	remapUIDs := boolParam("remapuids", false)
+	if remapUIDs && uidSuffix != "" {
+		return errors.New("remapuids:true and uid: cannot be combined")
+	}
+
 	// Require at least one actionable parameter. Profile values are already
 	// merged into parsed by this point, so this check covers profile-only runs.
 	hasAction := len(rawSets) > 0 || len(rawRemoves) > 0 ||
 		dobMask != "" || uidSuffix != "" || maskRows > 0 ||
 		boolParam("noprivate", false) || fixvrMode != "" ||
 		paramOne("ignoretype") != "" || paramOne("ignoremodality") != "" ||
-		len(Opts.PerModality) > 0
+		len(Opts.PerModality) > 0 || remapUIDs
 	if !hasAction {
-		return errors.New("at least one actionable parameter is required (set, remove, dob, uid, maskrows, noprivate, ignoretype, ignoremodality) — or specify a profile that contains one")
+		return errors.New("at least one actionable parameter is required (set, remove, dob, uid, maskrows, noprivate, ignoretype, ignoremodality, remapuids) — or specify a profile that contains one")
 	}
 
 	if dobMask != "" && len(dobMask) != 8 {
@@ -224,6 +235,13 @@ func runModify() error {
 	// Pre-compute per-modality override parameter sets from the profile.
 	perModOverrides := buildModalityOverrides(Opts.PerModality)
 
+	// One shared UID remapper for the whole run guarantees that the same source
+	// UID maps to the same replacement everywhere it appears across all files.
+	var uidRemap *uidRemapper
+	if remapUIDs {
+		uidRemap = newUIDRemapper()
+	}
+
 	// Phase 1: collect DICOM file paths (fast, serial walk).
 	type fileJob struct{ path, rel string }
 	var jobs []fileJob
@@ -306,7 +324,7 @@ func runModify() error {
 				if srcFile == nil {
 					continue
 				}
-				skipped, ds, perr := processFile(srcFile, edits, removals, dobMask, uidSuffix, removePrivate, maskRows, ignoreTypes, ignoreModalities, fixvrMode, perModOverrides)
+				skipped, ds, perr := processFile(srcFile, edits, removals, dobMask, uidSuffix, removePrivate, maskRows, ignoreTypes, ignoreModalities, fixvrMode, perModOverrides, uidRemap)
 				if perr != nil {
 					recordErr(fmt.Errorf("processing %q: %w", job.path, perr))
 					continue
@@ -582,7 +600,7 @@ func filterKeep(removals []tag.Tag, keep []tag.Tag) []tag.Tag {
 // all edits. It returns (true, zero, nil) when the file should be skipped, or
 // (false, transformed dataset, nil) on success. The caller is responsible for
 // writing the returned dataset to its destination.
-func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uidSuffix string, removePrivate bool, maskRows int, ignoreTypes, ignoreModalities []string, fixvrMode string, perModOverrides map[string]modalityOverride) (skipped bool, ds dicom.Dataset, err error) {
+func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uidSuffix string, removePrivate bool, maskRows int, ignoreTypes, ignoreModalities []string, fixvrMode string, perModOverrides map[string]modalityOverride, uidRemap *uidRemapper) (skipped bool, ds dicom.Dataset, err error) {
 	info, err := src.Stat()
 	if err != nil {
 		src.Close()
@@ -660,31 +678,12 @@ func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uid
 		applyFixVR(&ds, fixvrMode)
 	}
 
-	if removePrivate {
-		filtered := ds.Elements[:0]
-		for _, elem := range ds.Elements {
-			if elem.Tag.Group%2 != 1 {
-				filtered = append(filtered, elem)
-			}
+	if removePrivate || len(removals) > 0 {
+		removalSet := make(map[tag.Tag]struct{}, len(removals))
+		for _, t := range removals {
+			removalSet[t] = struct{}{}
 		}
-		ds.Elements = filtered
-	}
-
-	if len(removals) > 0 {
-		filtered := ds.Elements[:0]
-		for _, elem := range ds.Elements {
-			remove := false
-			for _, t := range removals {
-				if elem.Tag == t {
-					remove = true
-					break
-				}
-			}
-			if !remove {
-				filtered = append(filtered, elem)
-			}
-		}
-		ds.Elements = filtered
+		ds.Elements = pruneElements(ds.Elements, removalSet, removePrivate)
 	}
 
 	if dobMask != "" {
@@ -697,13 +696,23 @@ func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uid
 		applyUIDSuffix(&ds, uidSuffix)
 	}
 
+	if uidRemap != nil {
+		applyUIDRemap(ds.Elements, uidRemap)
+	}
+
 	if maskRows > 0 {
 		applyRowMask(&ds, maskRows)
 	}
 
 	for _, e := range edits {
-		if err := applyEdit(&ds, e); err != nil {
+		newElem, err := buildElement(&ds, e)
+		if err != nil {
 			return false, ds, err
+		}
+		// Replace every occurrence at any nesting depth; append at the top level
+		// only when the tag is absent throughout the dataset.
+		if !replaceInElements(ds.Elements, newElem) {
+			ds.Elements = append(ds.Elements, newElem)
 		}
 	}
 
@@ -806,6 +815,81 @@ func applyUIDSuffix(ds *dicom.Dataset, suffix string) {
 			continue
 		}
 		elem.Value = v
+	}
+}
+
+// dicomOrgRoot prefixes all DICOM standard-defined UIDs (SOP Classes, Transfer
+// Syntaxes, well-known UIDs). These describe object type/encoding, not the
+// patient or study, and must never be remapped.
+const dicomOrgRoot = "1.2.840.10008."
+
+// uidRemapper assigns a fresh, stable replacement UID for each distinct source
+// UID seen during a run. It is safe for concurrent use by the worker pool.
+type uidRemapper struct {
+	mu sync.Mutex
+	m  map[string]string
+}
+
+func newUIDRemapper() *uidRemapper { return &uidRemapper{m: make(map[string]string)} }
+
+// mapUID returns the replacement UID for original, generating and caching a new
+// one on first sight so the same original always maps to the same replacement.
+func (r *uidRemapper) mapUID(original string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if v, ok := r.m[original]; ok {
+		return v
+	}
+	v := generateUID()
+	r.m[original] = v
+	return v
+}
+
+// applyUIDRemap replaces every site-generated UI (UID) value at any nesting depth
+// with its consistent remapped UID, leaving standard and structural UIDs
+// untouched. Recursing into sequences keeps nested references (e.g.
+// ReferencedSOPInstanceUID) consistent with the instances they point to.
+func applyUIDRemap(elements []*dicom.Element, r *uidRemapper) {
+	for _, elem := range elements {
+		if elem.Value != nil && elem.Value.ValueType() == dicom.Sequences {
+			if seqItems, ok := elem.Value.GetValue().([]*dicom.SequenceItemValue); ok {
+				for _, item := range seqItems {
+					if itemElems, ok2 := item.GetValue().([]*dicom.Element); ok2 {
+						applyUIDRemap(itemElems, r)
+					}
+				}
+			}
+			continue
+		}
+		if elem.RawValueRepresentation != "UI" {
+			continue
+		}
+		// Preserve structural/implementation UIDs: encoding and creating software,
+		// not patient or study identity.
+		if elem.Tag == tag.TransferSyntaxUID ||
+			elem.Tag == tag.ReferencedTransferSyntaxUIDInFile ||
+			elem.Tag == tag.ImplementationClassUID {
+			continue
+		}
+		vals, ok := elem.Value.GetValue().([]string)
+		if !ok {
+			continue
+		}
+		changed := false
+		out := make([]string, len(vals))
+		for i, uid := range vals {
+			if uid == "" || strings.HasPrefix(uid, dicomOrgRoot) {
+				out[i] = uid // empty or standard UID (e.g. SOP Class) — keep
+				continue
+			}
+			out[i] = r.mapUID(uid)
+			changed = true
+		}
+		if changed {
+			if v, err := dicom.NewValue(out); err == nil {
+				elem.Value = v
+			}
+		}
 	}
 }
 
@@ -1023,6 +1107,69 @@ func fixVRElements(elements []*dicom.Element, mode string) []*dicom.Element {
 		filtered = append(filtered, corrected)
 	}
 	return filtered
+}
+
+// pruneElements recursively drops elements whose tag is in removalSet, plus any
+// odd-group (private) element when removePrivate is set, at every nesting depth.
+// Sequence elements that are not themselves removed are recursed into and rebuilt
+// so that nested identifiers are scrubbed as well. The removalSet lookup keeps
+// this an O(elements) pass regardless of how many tags are being removed.
+func pruneElements(elements []*dicom.Element, removalSet map[tag.Tag]struct{}, removePrivate bool) []*dicom.Element {
+	filtered := elements[:0] // reuse backing array, matching the existing in-place style
+	for _, elem := range elements {
+		if removePrivate && elem.Tag.Group%2 == 1 {
+			continue
+		}
+		if _, ok := removalSet[elem.Tag]; ok {
+			continue // sequence removed wholesale; no recursion needed
+		}
+		if elem.Value != nil && elem.Value.ValueType() == dicom.Sequences {
+			if seqItems, ok := elem.Value.GetValue().([]*dicom.SequenceItemValue); ok {
+				rebuilt := make([][]*dicom.Element, 0, len(seqItems))
+				for _, item := range seqItems {
+					if itemElems, ok2 := item.GetValue().([]*dicom.Element); ok2 {
+						rebuilt = append(rebuilt, pruneElements(itemElems, removalSet, removePrivate))
+					} else {
+						rebuilt = append(rebuilt, nil)
+					}
+				}
+				if newVal, err := dicom.NewValue(rebuilt); err == nil {
+					elem.Value = newVal
+				}
+			}
+		}
+		filtered = append(filtered, elem)
+	}
+	return filtered
+}
+
+// replaceInElements replaces the value/VR of every element matching newElem.Tag
+// at any nesting depth, returning true if at least one occurrence was replaced.
+// Nested elements are shared *dicom.Element pointers, so mutating their fields
+// persists without rebuilding the sequence value.
+func replaceInElements(elements []*dicom.Element, newElem *dicom.Element) bool {
+	replaced := false
+	for _, elem := range elements {
+		if elem.Tag == newElem.Tag {
+			elem.Value = newElem.Value
+			elem.ValueRepresentation = newElem.ValueRepresentation
+			elem.RawValueRepresentation = newElem.RawValueRepresentation
+			replaced = true
+			continue
+		}
+		if elem.Value != nil && elem.Value.ValueType() == dicom.Sequences {
+			if seqItems, ok := elem.Value.GetValue().([]*dicom.SequenceItemValue); ok {
+				for _, item := range seqItems {
+					if itemElems, ok2 := item.GetValue().([]*dicom.Element); ok2 {
+						if replaceInElements(itemElems, newElem) {
+							replaced = true
+						}
+					}
+				}
+			}
+		}
+	}
+	return replaced
 }
 
 // rebuildWithCorrectVR creates a new element for elem.Tag using correctVR,
