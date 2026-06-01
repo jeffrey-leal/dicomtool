@@ -1265,11 +1265,11 @@ Maps short alias names to DICOM tag identifiers. Any alias defined here can be u
 
 ### A.2  profiles.json
 
-Defines two built-in profiles. `base-anon` is a comprehensive de-identification baseline: it sets patient identity fields to anonymous values, masks the date of birth to year only, removes private tags, and removes tags commonly associated with identifying information. `anon-img` derives from `base-anon` and additionally skips Secondary Capture, Overlay, Presentation State, and Structured Report objects.
+Defines one built-in profile. `base-deident` is a comprehensive de-identification baseline: it sets patient identity fields to anonymous values, masks the date of birth to year only, removes all private tags, corrects non-standard Value Representations, and removes over 130 tags commonly associated with identifying information.
 
 ```
 {
-  "base-anon": {
+  "base-deident": {
     "set": [
       "PatientName=ANON",
       "PatientID=ANON",
@@ -1315,11 +1315,6 @@ Defines two built-in profiles. `base-anon` is a comprehensive de-identification 
     "dob":       "YYYY0101",
     "noprivate": true,
     "fixvr":     "correct"
-  },
-  "anon-img": {
-    "base":           "base-anon",
-    "ignoretype":     ["SECONDARY"],
-    "ignoremodality": ["SC", "OT", "PR", "SR"]
   }
 }
 ```

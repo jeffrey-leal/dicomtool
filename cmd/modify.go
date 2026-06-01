@@ -62,7 +62,7 @@ Processing order per file:
 
 Examples:
   dicomtool modify input:C:\in output:C:\out set:PatientName=ANON noprivate:true
-  dicomtool modify input:C:\in output:C:\out profile:base-anon
+  dicomtool modify input:C:\in output:C:\out profile:base-deident
   dicomtool modify input:C:\in output:C:\out.zip zip:true set:PatientName=ANON
   dicomtool modify input:C:\in output:C:\out fixvr:correct verbose:true`,
 	Args: cobra.MinimumNArgs(1),

@@ -1,5 +1,5 @@
 {
-  "base-anon": {
+  "base-deident": {
     "set": [
       "PatientName=ANON",
       "PatientID=ANON",
@@ -143,17 +143,5 @@
     "dob": "YYYY0101",
     "noprivate": true,
     "fixvr": "correct"
-  },
-  "anon-img": {
-    "base": "base-anon",
-    "ignoretype": [
-      "SECONDARY"
-    ],
-    "ignoremodality": [
-      "SC",
-      "OT",
-      "PR",
-      "SR"
-    ]
   }
 }
