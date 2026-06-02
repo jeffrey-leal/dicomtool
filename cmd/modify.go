@@ -242,7 +242,9 @@ func runModify() error {
 		uidRemap = newUIDRemapper()
 	}
 
-	// Phase 1: collect DICOM file paths (fast, serial walk).
+	// Phase 1: enumerate files (fast, serial walk — no per-file read). Validation
+	// is left to the worker's openDICOMFile, which is the sole reader and skips
+	// non-DICOM files, so each file is opened once rather than twice.
 	type fileJob struct{ path, rel string }
 	var jobs []fileJob
 	if werr := filepath.WalkDir(inputDir, func(path string, d fs.DirEntry, err error) error {
@@ -250,13 +252,6 @@ func runModify() error {
 			return err
 		}
 		if d.IsDir() {
-			return nil
-		}
-		ok, ferr := isDICOMFile(path)
-		if ferr != nil {
-			return fmt.Errorf("checking %q: %w", path, ferr)
-		}
-		if !ok {
 			return nil
 		}
 		rel, rerr := filepath.Rel(inputDir, path)
@@ -307,6 +302,12 @@ func runModify() error {
 	jobCh := make(chan fileJob, numWorkers)
 	var zipMu sync.Mutex // serialises zip entry creation + write
 	var wg sync.WaitGroup
+
+	// When generating a DICOMDIR, collect each file's index metadata from the
+	// in-memory transformed dataset so the output tree need not be re-parsed.
+	dicomdirEnabled := boolParam("dicomdir", false)
+	var ddMu sync.Mutex
+	var ddSources []dicomdirSource
 
 	for range numWorkers {
 		wg.Add(1)
@@ -384,6 +385,12 @@ func runModify() error {
 						recordErr(fmt.Errorf("close: %w", cerr))
 						continue
 					}
+					if dicomdirEnabled {
+						src := extractDicomdirSource(&ds, job.rel)
+						ddMu.Lock()
+						ddSources = append(ddSources, src)
+						ddMu.Unlock()
+					}
 					if Opts.Verbose {
 						for _, e := range edits {
 							fmt.Printf("  set %s = %q\n", e.tag, e.value)
@@ -439,8 +446,8 @@ func runModify() error {
 		}
 	}
 
-	if boolParam("dicomdir", false) {
-		if err := WriteDICOMDIR(Opts.Output); err != nil {
+	if dicomdirEnabled {
+		if err := WriteDICOMDIRFromSources(Opts.Output, ddSources); err != nil {
 			return err
 		}
 	}

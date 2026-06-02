@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"sync"
 	"testing"
 
@@ -326,5 +327,47 @@ func TestUIDRemapper_ConcurrentMapUID(t *testing.T) {
 	// All callers must observe the single cached value for a given input.
 	if a, b := r.mapUID("1.2.3.4"), r.mapUID("1.2.3.4"); a != b {
 		t.Fatalf("inconsistent mapping after concurrent access: %q vs %q", a, b)
+	}
+}
+
+// --- findSequenceItemPositions ------------------------------------------------
+
+// bruteForceItemPositions is the reference per-byte scan the optimized
+// findSequenceItemPositions must match exactly.
+func bruteForceItemPositions(data []byte) []int {
+	marker := []byte{0xFE, 0xFF, 0x00, 0xE0}
+	var positions []int
+	for i := 0; i <= len(data)-4; i++ {
+		if bytes.Equal(data[i:i+4], marker) {
+			positions = append(positions, i)
+		}
+	}
+	return positions
+}
+
+func TestFindSequenceItemPositions(t *testing.T) {
+	m := []byte{0xFE, 0xFF, 0x00, 0xE0}
+	cases := map[string][]byte{
+		"empty":       {},
+		"too short":   {0xFE, 0xFF, 0x00},
+		"none":        {0x01, 0x02, 0x03, 0x04, 0x05, 0x06},
+		"single":      append([]byte{0x00, 0x11}, m...),
+		"at start":    append(append([]byte{}, m...), 0x01, 0x02),
+		"at end":      append([]byte{0x09, 0x08}, m...),
+		"back to back": append(append([]byte{}, m...), m...),
+		"three apart": bytes.Join([][]byte{m, {0xAA, 0xBB}, m, {0xCC}, m}, nil),
+		"near miss":   {0xFE, 0xFF, 0x00, 0xE1, 0xFE, 0xFF, 0x00, 0xE0},
+	}
+	for name, data := range cases {
+		got := findSequenceItemPositions(data)
+		want := bruteForceItemPositions(data)
+		if len(got) != len(want) {
+			t.Fatalf("%s: got %v, want %v", name, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("%s: got %v, want %v", name, got, want)
+			}
+		}
 	}
 }

@@ -386,7 +386,7 @@ func buildContent(d Formatter) {
 	d.Space()
 	d.Space()
 	d.TitleP("dicomtool")
-	d.SubtitleP("Usage Manual  v1.3.0")
+	d.SubtitleP("Usage Manual  v1.3.1")
 	d.Space()
 	d.P("A command-line utility for inspecting and modifying DICOM medical imaging files.")
 	d.PageBreak()

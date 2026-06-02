@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.3.1
+
+### Performance
+
+No behaviour or output changes — internal efficiency only.
+
+#### Single Read Per File
+- The `modify` file walk no longer pre-validates each file with a separate read. File enumeration is now a pure directory walk; the worker that processes a file is the sole reader. This eliminates a redundant open-read-close on every file in the input tree (previously each file was opened twice), most noticeable on large or networked trees.
+
+#### DICOMDIR Built From In-Memory Datasets
+- When `dicomdir:true` is set, the directory index is now built from the already-parsed, transformed datasets collected during the modify pass, rather than re-walking and re-parsing the entire output tree afterward.
+- On a 441-file study this reduced `dicomdir:true` runtime from ~6.6 s to ~2.1 s (about 3× faster). The generated DICOMDIR is structurally identical to before.
+
+#### Faster DICOMDIR Item-Marker Scan
+- `findSequenceItemPositions` now uses the optimized `bytes.Index` scanner instead of a per-byte comparison loop.
+
+---
+
 ## v1.3.0
 
 ### New Features

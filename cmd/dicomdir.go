@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/suyashkumar/dicom"
@@ -89,10 +90,20 @@ type recEntry struct {
 //  3. Patch the UL offset fields in-place with the real byte positions.
 //  4. Write the patched bytes to the final file.
 func WriteDICOMDIR(outputDir string) error {
-	patients, err := collectDicomdirPatients(outputDir)
+	sources, err := collectDicomdirSources(outputDir)
 	if err != nil {
 		return err
 	}
+	return WriteDICOMDIRFromSources(outputDir, sources)
+}
+
+// WriteDICOMDIRFromSources builds and writes a conformant DICOMDIR at
+// outputDir/DICOMDIR from pre-collected per-file metadata, avoiding a second
+// parse of the output tree. Sources are sorted by relative path so the record
+// order is deterministic regardless of how they were gathered.
+func WriteDICOMDIRFromSources(outputDir string, sources []dicomdirSource) error {
+	sort.Slice(sources, func(i, j int) bool { return sources[i].rel < sources[j].rel })
+	patients := buildPatientsFromSources(sources)
 	if len(patients) == 0 {
 		return nil
 	}
@@ -160,12 +171,47 @@ func WriteDICOMDIR(outputDir string) error {
 // Tree collection
 // ----------------------------------------------------------------------------
 
-// collectDicomdirPatients walks outputDir and builds a
-// patient / study / series / image hierarchy.
-func collectDicomdirPatients(outputDir string) ([]*dicomdirPatientInfo, error) {
-	patMap := map[string]*dicomdirPatientInfo{}
-	var patOrder []string
+// dicomdirSource is the minimal per-file metadata needed to build a DICOMDIR,
+// extracted once from a parsed dataset so the output tree need not be re-parsed.
+type dicomdirSource struct {
+	rel                                                   string
+	patientID, patientName                                string
+	studyUID, studyDate, studyTime, accession, studyID    string
+	seriesUID, modality, seriesNumber                     string
+	sopClass, sopInstance, transferSyntax, instanceNumber string
+}
 
+// extractDicomdirSource pulls the DICOMDIR-relevant fields from a parsed dataset.
+// rel is the file's path relative to the output root.
+func extractDicomdirSource(ds *dicom.Dataset, rel string) dicomdirSource {
+	ts := stringVal(ds, tag.TransferSyntaxUID)
+	if ts == "" {
+		ts = explicitLittleEndian
+	}
+	return dicomdirSource{
+		rel:            rel,
+		patientID:      stringVal(ds, tag.PatientID),
+		patientName:    stringVal(ds, tag.PatientName),
+		studyUID:       stringVal(ds, tag.StudyInstanceUID),
+		studyDate:      stringVal(ds, tag.StudyDate),
+		studyTime:      stringVal(ds, tag.Tag{Group: 0x0008, Element: 0x0030}), // StudyTime TM
+		accession:      stringVal(ds, tag.Tag{Group: 0x0008, Element: 0x0050}), // AccessionNumber SH
+		studyID:        stringVal(ds, tag.StudyID),
+		seriesUID:      stringVal(ds, tag.SeriesInstanceUID),
+		modality:       stringVal(ds, tag.Modality),
+		seriesNumber:   stringVal(ds, tag.SeriesNumber),
+		sopClass:       stringVal(ds, tag.SOPClassUID),
+		sopInstance:    stringVal(ds, tag.SOPInstanceUID),
+		transferSyntax: ts,
+		instanceNumber: stringVal(ds, tag.InstanceNumber),
+	}
+}
+
+// collectDicomdirSources walks outputDir, parsing each file once to extract its
+// DICOMDIR metadata. Used by the standalone WriteDICOMDIR path; the modify
+// pipeline collects sources from in-memory datasets instead.
+func collectDicomdirSources(outputDir string) ([]dicomdirSource, error) {
+	var sources []dicomdirSource
 	err := filepath.WalkDir(outputDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -187,83 +233,85 @@ func collectDicomdirPatients(outputDir string) ([]*dicomdirPatientInfo, error) {
 		if perr != nil {
 			return nil // skip unparseable files silently
 		}
-
 		rel, rerr := filepath.Rel(outputDir, path)
 		if rerr != nil {
 			return rerr
 		}
-		// DICOM ReferencedFileID is multi-valued CS, one component per path segment.
-		components := strings.Split(filepath.ToSlash(rel), "/")
+		sources = append(sources, extractDicomdirSource(&ds, rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return sources, nil
+}
 
-		patID := stringVal(&ds, tag.PatientID)
-		pat, exists := patMap[patID]
+// buildPatientsFromSources assembles the patient / study / series / image
+// hierarchy from per-file sources. Iteration order follows the (pre-sorted)
+// sources slice, so patient/study/series ordering is deterministic.
+func buildPatientsFromSources(sources []dicomdirSource) []*dicomdirPatientInfo {
+	patMap := map[string]*dicomdirPatientInfo{}
+	var patOrder []string
+
+	for _, src := range sources {
+		// DICOM ReferencedFileID is multi-valued CS, one component per path segment.
+		components := strings.Split(filepath.ToSlash(src.rel), "/")
+
+		pat, exists := patMap[src.patientID]
 		if !exists {
-			pat = &dicomdirPatientInfo{
-				id:   patID,
-				name: stringVal(&ds, tag.PatientName),
-			}
-			patMap[patID] = pat
-			patOrder = append(patOrder, patID)
+			pat = &dicomdirPatientInfo{id: src.patientID, name: src.patientName}
+			patMap[src.patientID] = pat
+			patOrder = append(patOrder, src.patientID)
 		}
 
-		studyUID := stringVal(&ds, tag.StudyInstanceUID)
 		var study *dicomdirStudyInfo
 		for _, s := range pat.studies {
-			if s.uid == studyUID {
+			if s.uid == src.studyUID {
 				study = s
 				break
 			}
 		}
 		if study == nil {
 			study = &dicomdirStudyInfo{
-				uid:       studyUID,
-				date:      stringVal(&ds, tag.StudyDate),
-				time:      stringVal(&ds, tag.Tag{Group: 0x0008, Element: 0x0030}), // StudyTime TM
-				accession: stringVal(&ds, tag.Tag{Group: 0x0008, Element: 0x0050}), // AccessionNumber SH
-				id:        stringVal(&ds, tag.StudyID),
+				uid:       src.studyUID,
+				date:      src.studyDate,
+				time:      src.studyTime,
+				accession: src.accession,
+				id:        src.studyID,
 			}
 			pat.studies = append(pat.studies, study)
 		}
 
-		seriesUID := stringVal(&ds, tag.SeriesInstanceUID)
 		var series *dicomdirSeriesInfo
 		for _, s := range study.series {
-			if s.uid == seriesUID {
+			if s.uid == src.seriesUID {
 				series = s
 				break
 			}
 		}
 		if series == nil {
 			series = &dicomdirSeriesInfo{
-				uid:      seriesUID,
-				modality: stringVal(&ds, tag.Modality),
-				number:   stringVal(&ds, tag.SeriesNumber),
+				uid:      src.seriesUID,
+				modality: src.modality,
+				number:   src.seriesNumber,
 			}
 			study.series = append(study.series, series)
 		}
 
-		ts := stringVal(&ds, tag.TransferSyntaxUID)
-		if ts == "" {
-			ts = explicitLittleEndian
-		}
 		series.images = append(series.images, &dicomdirImageInfo{
 			fileComponents: components,
-			sopClass:       stringVal(&ds, tag.SOPClassUID),
-			sopInstance:    stringVal(&ds, tag.SOPInstanceUID),
-			transferSyntax: ts,
-			instanceNumber: stringVal(&ds, tag.InstanceNumber),
+			sopClass:       src.sopClass,
+			sopInstance:    src.sopInstance,
+			transferSyntax: src.transferSyntax,
+			instanceNumber: src.instanceNumber,
 		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 
 	out := make([]*dicomdirPatientInfo, 0, len(patOrder))
 	for _, id := range patOrder {
 		out = append(out, patMap[id])
 	}
-	return out, nil
+	return out
 }
 
 // ----------------------------------------------------------------------------
@@ -426,10 +474,16 @@ func buildImageRecord(img *dicomdirImageInfo) []*dicom.Element {
 func findSequenceItemPositions(data []byte) []int {
 	marker := []byte{0xFE, 0xFF, 0x00, 0xE0}
 	var positions []int
-	for i := 0; i <= len(data)-4; i++ {
-		if bytes.Equal(data[i:i+4], marker) {
-			positions = append(positions, i)
+	// Advance by one past each hit: the 4-byte marker cannot self-overlap, so
+	// this finds exactly the same set of starts as a per-byte scan, but lets the
+	// optimized bytes.Index scanner do the work.
+	for off := 0; off <= len(data)-len(marker); {
+		i := bytes.Index(data[off:], marker)
+		if i < 0 {
+			break
 		}
+		positions = append(positions, off+i)
+		off += i + 1
 	}
 	return positions
 }

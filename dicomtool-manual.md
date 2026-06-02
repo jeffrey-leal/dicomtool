@@ -1,6 +1,6 @@
 # dicomtool
 
-**Usage Manual  v1.3.0**
+**Usage Manual  v1.3.1**
 
 A command-line utility for inspecting and modifying DICOM medical imaging files.
 
