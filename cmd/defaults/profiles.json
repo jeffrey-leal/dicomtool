@@ -142,6 +142,7 @@
     ],
     "dob": "YYYY0101",
     "noprivate": true,
-    "fixvr": "correct"
+    "fixvr": "correct",
+    "remapuids": true
   }
 }

@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.4.1
+
+### Changed
+
+#### Default `base-deident` Profile Now Remaps UIDs
+- The built-in `base-deident` de-identification profile now sets `remapuids: true`, so every study, series, and instance UID (and all references to them) is replaced with a freshly generated UID by default, consistently across the run. This closes a residual re-identification vector — the original UIDs are no longer embedded in de-identified output.
+- Existing `~/.dicomtool/profiles.json` files are not modified automatically; run `dicomtool install` to refresh the defaults, or add `"remapuids": true` to your profile manually.
+
+---
+
 ## v1.4.0
 
 ### New Features

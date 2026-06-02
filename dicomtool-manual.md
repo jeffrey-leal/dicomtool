@@ -1,6 +1,6 @@
 # dicomtool
 
-**Usage Manual  v1.4.0**
+**Usage Manual  v1.4.1**
 
 A command-line utility for inspecting and modifying DICOM medical imaging files.
 
@@ -1298,7 +1298,7 @@ Maps short alias names to DICOM tag identifiers. Any alias defined here can be u
 
 ### A.2  profiles.json
 
-Defines one built-in profile. `base-deident` is a comprehensive de-identification baseline: it sets patient identity fields to anonymous values, masks the date of birth to year only, removes all private tags, corrects non-standard Value Representations, and removes over 130 tags commonly associated with identifying information.
+Defines one built-in profile. `base-deident` is a comprehensive de-identification baseline: it sets patient identity fields to anonymous values, masks the date of birth to year only, removes all private tags, corrects non-standard Value Representations, remaps every study/series/instance UID consistently, and removes over 130 tags commonly associated with identifying information.
 
 ```
 {
@@ -1347,7 +1347,8 @@ Defines one built-in profile. `base-deident` is a comprehensive de-identificatio
     ],
     "dob":       "YYYY0101",
     "noprivate": true,
-    "fixvr":     "correct"
+    "fixvr":     "correct",
+    "remapuids": true
   }
 }
 ```
