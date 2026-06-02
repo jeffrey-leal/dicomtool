@@ -2,6 +2,11 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/csv"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -369,5 +374,103 @@ func TestFindSequenceItemPositions(t *testing.T) {
 				t.Fatalf("%s: got %v, want %v", name, got, want)
 			}
 		}
+	}
+}
+
+// --- writeErrorLog ------------------------------------------------------------
+
+// sampleFailures includes a comma and quote so CSV/JSON escaping is exercised.
+func sampleFailures() []fileFailure {
+	return []fileFailure{
+		{File: `C:\in\a.dcm`, Error: "process: parse: unexpected EOF"},
+		{File: `C:\in\b.dcm`, Error: `open: permission denied, "x"`},
+	}
+}
+
+func TestWriteErrorLog_JSON(t *testing.T) {
+	dir := t.TempDir()
+	failures := sampleFailures()
+	path, err := writeErrorLog(dir, "json", 5, len(failures), failures)
+	if err != nil {
+		t.Fatalf("writeErrorLog: %v", err)
+	}
+	if filepath.Base(path) != "ERROR.json" {
+		t.Fatalf("unexpected file name: %s", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var report struct {
+		Processed int           `json:"processed"`
+		Failed    int           `json:"failed"`
+		Errors    []fileFailure `json:"errors"`
+	}
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("json round-trip: %v", err)
+	}
+	if report.Processed != 5 || report.Failed != 2 || len(report.Errors) != 2 {
+		t.Fatalf("envelope mismatch: %+v", report)
+	}
+	if report.Errors[1].File != `C:\in\b.dcm` || report.Errors[1].Error != `open: permission denied, "x"` {
+		t.Fatalf("entry mismatch: %+v", report.Errors[1])
+	}
+}
+
+func TestWriteErrorLog_CSV(t *testing.T) {
+	dir := t.TempDir()
+	failures := sampleFailures()
+	path, err := writeErrorLog(dir, "csv", 5, len(failures), failures)
+	if err != nil {
+		t.Fatalf("writeErrorLog: %v", err)
+	}
+	if filepath.Base(path) != "ERROR.csv" {
+		t.Fatalf("unexpected file name: %s", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	rows, err := csv.NewReader(bytes.NewReader(data)).ReadAll()
+	if err != nil {
+		t.Fatalf("csv parse: %v", err)
+	}
+	if len(rows) != 3 { // header + 2
+		t.Fatalf("expected 3 rows, got %d", len(rows))
+	}
+	if rows[0][0] != "file" || rows[0][1] != "error" {
+		t.Fatalf("bad header: %v", rows[0])
+	}
+	if rows[2][0] != `C:\in\b.dcm` || rows[2][1] != `open: permission denied, "x"` {
+		t.Fatalf("bad row (escaping?): %v", rows[2])
+	}
+}
+
+func TestWriteErrorLog_TXT(t *testing.T) {
+	dir := t.TempDir()
+	failures := sampleFailures()
+	path, err := writeErrorLog(dir, "txt", 5, len(failures), failures)
+	if err != nil {
+		t.Fatalf("writeErrorLog: %v", err)
+	}
+	if filepath.Base(path) != "ERROR.txt" {
+		t.Fatalf("unexpected file name: %s", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{"processed: 5", "failed: 2", `C:\in\a.dcm: process: parse: unexpected EOF`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("txt missing %q in:\n%s", want, text)
+		}
+	}
+}
+
+func TestWriteErrorLog_CreatesMissingDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "does", "not", "exist")
+	if _, err := writeErrorLog(dir, "json", 0, 1, sampleFailures()[:1]); err != nil {
+		t.Fatalf("expected dir to be created, got error: %v", err)
 	}
 }

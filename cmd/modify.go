@@ -21,8 +21,9 @@ import (
 )
 
 var modifyCmd = &cobra.Command{
-	Use:   "modify input:<dir> output:<dir> [options...]",
-	Short: "Overwrite specific DICOM tags in all files under a directory tree",
+	Use:          "modify input:<dir> output:<dir> [options...]",
+	SilenceUsage: true, // a post-run failure should not dump the usage block
+	Short:        "Overwrite specific DICOM tags in all files under a directory tree",
 	Long: `Read every DICOM file under an input directory tree, apply the specified
 modifications, and write results to an output directory preserving the
 original folder structure.
@@ -60,7 +61,14 @@ Parameters:
   zip:true                  Package output into a ZIP archive instead of a directory.
   dicomdir:true             Generate a DICOMDIR index in the output directory.
   profile:<name>            Apply a named profile from ~/.dicomtool/profiles.json.
+  errorlog:txt|csv|json     On failure, write detailed per-file errors to an
+                            ERROR.<ext> file in the output root instead of the
+                            console. Without it, details print to the console.
   verbose:true              Print per-file progress and a completion summary.
+
+Files that fail are skipped; processing continues. A summary
+"N file(s) processed, M file(s) failed" is always printed, and the command exits
+non-zero when any file failed.
 
 Processing order per file:
   1. Parse   2. fixvr   3. ignoretype     4. ignoremodality   5. noprivate
@@ -113,6 +121,11 @@ func runModify() error {
 	fixvrMode := strings.ToLower(paramOne("fixvr"))
 	if fixvrMode != "" && fixvrMode != "correct" && fixvrMode != "skip" && fixvrMode != "passthrough" {
 		return fmt.Errorf("fixvr %q: must be correct, skip, or passthrough", fixvrMode)
+	}
+
+	errorlogFormat := strings.ToLower(paramOne("errorlog"))
+	if errorlogFormat != "" && errorlogFormat != "txt" && errorlogFormat != "csv" && errorlogFormat != "json" {
+		return fmt.Errorf("errorlog %q: must be txt, csv, or json", errorlogFormat)
 	}
 
 	maskRows := 0
@@ -277,7 +290,6 @@ func runModify() error {
 	// Phase 2: process files using a worker pool.
 	var (
 		mu        sync.Mutex
-		firstErr  error
 		fileCount int
 		spinIdx   int
 	)
@@ -286,17 +298,14 @@ func runModify() error {
 		fmt.Printf("%c", spinChars[0])
 	}
 
-	recordErr := func(err error) {
-		mu.Lock()
-		if firstErr == nil {
-			firstErr = err
-		}
-		mu.Unlock()
-	}
-	hasErr := func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return firstErr != nil
+	// Per-file failures are collected rather than aborting the run; processing
+	// continues so a single bad file does not kill an entire batch.
+	var failMu sync.Mutex
+	var failures []fileFailure
+	recordFailure := func(path string, err error) {
+		failMu.Lock()
+		failures = append(failures, fileFailure{File: path, Error: err.Error()})
+		failMu.Unlock()
 	}
 
 	jobCh := make(chan fileJob, numWorkers)
@@ -314,12 +323,9 @@ func runModify() error {
 		go func() {
 			defer wg.Done()
 			for job := range jobCh {
-				if hasErr() {
-					continue
-				}
 				srcFile, ferr := openDICOMFile(job.path)
 				if ferr != nil {
-					recordErr(fmt.Errorf("opening %q: %w", job.path, ferr))
+					recordFailure(job.path, fmt.Errorf("open: %w", ferr))
 					continue
 				}
 				if srcFile == nil {
@@ -327,7 +333,7 @@ func runModify() error {
 				}
 				skipped, ds, perr := processFile(srcFile, edits, removals, dobMask, uidSuffix, removePrivate, maskRows, ignoreTypes, ignoreModalities, fixvrMode, perModOverrides, uidRemap)
 				if perr != nil {
-					recordErr(fmt.Errorf("processing %q: %w", job.path, perr))
+					recordFailure(job.path, fmt.Errorf("process: %w", perr))
 					continue
 				}
 				if skipped {
@@ -349,7 +355,7 @@ func runModify() error {
 					}
 					zipMu.Unlock()
 					if zerr != nil {
-						recordErr(fmt.Errorf("zip %q: %w", job.rel, zerr))
+						recordFailure(job.path, fmt.Errorf("zip: %w", zerr))
 						continue
 					}
 					if Opts.Verbose {
@@ -361,12 +367,12 @@ func runModify() error {
 				} else {
 					outFile := filepath.Join(Opts.Output, job.rel)
 					if merr := os.MkdirAll(filepath.Dir(outFile), 0o755); merr != nil {
-						recordErr(fmt.Errorf("create output dir: %w", merr))
+						recordFailure(job.path, fmt.Errorf("create output dir: %w", merr))
 						continue
 					}
 					f, cerr := os.Create(outFile)
 					if cerr != nil {
-						recordErr(fmt.Errorf("create output file: %w", cerr))
+						recordFailure(job.path, fmt.Errorf("create output file: %w", cerr))
 						continue
 					}
 					bw := bufio.NewWriterSize(f, 1<<20)
@@ -374,15 +380,15 @@ func runModify() error {
 					ferr = bw.Flush()
 					cerr = f.Close()
 					if werr != nil {
-						recordErr(fmt.Errorf("write: %w", werr))
+						recordFailure(job.path, fmt.Errorf("write: %w", werr))
 						continue
 					}
 					if ferr != nil {
-						recordErr(fmt.Errorf("flush: %w", ferr))
+						recordFailure(job.path, fmt.Errorf("flush: %w", ferr))
 						continue
 					}
 					if cerr != nil {
-						recordErr(fmt.Errorf("close: %w", cerr))
+						recordFailure(job.path, fmt.Errorf("close: %w", cerr))
 						continue
 					}
 					if dicomdirEnabled {
@@ -415,14 +421,12 @@ func runModify() error {
 	close(jobCh)
 	wg.Wait()
 
-	if firstErr != nil {
-		if zw != nil {
-			zw.Close()
-		}
-		if zf != nil {
-			zf.Close()
-		}
-		return firstErr
+	// Per-file failures do not abort the run; the successful output (including any
+	// partial zip) is finalised and a summary is always printed.
+	failed := len(failures)
+	failedSuffix := ""
+	if failed > 0 {
+		failedSuffix = fmt.Sprintf(", %d file(s) failed", failed)
 	}
 
 	if zipOutput {
@@ -434,15 +438,15 @@ func runModify() error {
 			return fmt.Errorf("closing zip: %w", err)
 		}
 		if Opts.Verbose {
-			fmt.Printf("%d file(s) written to: %s\n", fileCount, zipPath)
+			fmt.Printf("%d file(s) written to: %s%s\n", fileCount, zipPath, failedSuffix)
 		} else {
-			fmt.Printf("\b%d file(s) written to: %s\n", fileCount, zipPath)
+			fmt.Printf("\b%d file(s) written to: %s%s\n", fileCount, zipPath, failedSuffix)
 		}
 	} else {
 		if Opts.Verbose {
-			fmt.Printf("%d file(s) processed\n", fileCount)
+			fmt.Printf("%d file(s) processed%s\n", fileCount, failedSuffix)
 		} else {
-			fmt.Printf("\b%d file(s) processed\n", fileCount)
+			fmt.Printf("\b%d file(s) processed%s\n", fileCount, failedSuffix)
 		}
 	}
 
@@ -450,6 +454,25 @@ func runModify() error {
 		if err := WriteDICOMDIRFromSources(Opts.Output, ddSources); err != nil {
 			return err
 		}
+	}
+
+	if failed > 0 {
+		if errorlogFormat != "" {
+			errorLogDir := Opts.Output
+			if zipOutput {
+				errorLogDir = filepath.Dir(zipPath)
+			}
+			if path, werr := writeErrorLog(errorLogDir, errorlogFormat, fileCount, failed, failures); werr != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not write error log: %v\n", werr)
+			} else {
+				fmt.Printf("errors written to: %s\n", path)
+			}
+		} else {
+			for _, f := range failures {
+				fmt.Printf("  %s: %s\n", f.File, f.Error)
+			}
+		}
+		return fmt.Errorf("%d file(s) failed", failed)
 	}
 	return nil
 }

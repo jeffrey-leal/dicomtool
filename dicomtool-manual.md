@@ -1,6 +1,6 @@
 # dicomtool
 
-**Usage Manual  v1.3.1**
+**Usage Manual  v1.4.0**
 
 A command-line utility for inspecting and modifying DICOM medical imaging files.
 
@@ -211,6 +211,7 @@ dicomtool modify input:<dir> output:<dir>
 | `zip:true` | Package all output files into a single ZIP archive instead of writing them to a directory. The `output:` path is used as the ZIP file name; a `.zip` extension is appended automatically if not already present. Cannot be combined with `dicomdir:true`. |
 | `dicomdir:true` | After all files have been written, generate a DICOMDIR index file in the output directory. Cannot be combined with `zip:true`. |
 | `profile:<name>` | Apply a named processing profile from `profiles.json`. CLI parameters take precedence over profile values. See Section 6. |
+| `errorlog:txt|csv|json` | When one or more files fail, write the detailed per-file error messages to an `ERROR.<ext>` file in the root of the output directory instead of the console, in the chosen format. Without this parameter, the details print to the console. See the Error Handling subsection. |
 | `verbose:true` | Print a line for each file written, per-operation diagnostics, and a summary count on completion. |
 
 
@@ -234,6 +235,18 @@ Operations are applied in the following order within each file:
 
 Files that do not carry the DICOM magic bytes (`DICM` at byte offset 128) are silently skipped regardless of file name or extension.
 
+
+#### Error Handling
+
+Processing is resilient: a file that cannot be read, parsed, or written is recorded as a failure and skipped, and the run continues with the remaining files. One bad file never aborts an entire batch.
+
+On completion a summary is always printed in the form `N file(s) processed, M file(s) failed` (the failed clause appears only when at least one file failed). When any file fails, the command exits with a non-zero status so scripts and pipelines can detect partial failures.
+
+The detailed per-file error messages are, by default, printed to the console after the summary. Supplying `errorlog:<format>` instead redirects them into a file named `ERROR.<ext>` written in the root of the output directory (for ZIP output, alongside the archive). The file is created only when at least one file failed. Three formats are supported:
+
+- `errorlog:txt` — plain text: a `processed`/`failed` header followed by one `file: error` line per failure.
+- `errorlog:csv` — comma-separated values with a `file,error` header row, suitable for spreadsheets.
+- `errorlog:json` — a machine-readable object with `processed` and `failed` counts and an `errors` array of `{file, error}` entries.
 
 #### Examples
 
@@ -272,6 +285,11 @@ dicomtool modify input:C:\study output:C:\out fixvr:correct
 ```
 dicomtool modify input:C:\study output:C:\out workers:8
     set:PatientName=ANON noprivate:true
+```
+
+```
+dicomtool modify input:C:\study output:C:\deidentified
+    profile:base-deident errorlog:json
 ```
 
 

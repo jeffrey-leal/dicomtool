@@ -386,7 +386,7 @@ func buildContent(d Formatter) {
 	d.Space()
 	d.Space()
 	d.TitleP("dicomtool")
-	d.SubtitleP("Usage Manual  v1.3.1")
+	d.SubtitleP("Usage Manual  v1.4.0")
 	d.Space()
 	d.P("A command-line utility for inspecting and modifying DICOM medical imaging files.")
 	d.PageBreak()
@@ -492,6 +492,7 @@ func buildContent(d Formatter) {
 		{"`zip:true`", "Package all output files into a single ZIP archive instead of writing them to a directory. The `output:` path is used as the ZIP file name; a `.zip` extension is appended automatically if not already present. Cannot be combined with `dicomdir:true`."},
 		{"`dicomdir:true`", "After all files have been written, generate a DICOMDIR index file in the output directory. Cannot be combined with `zip:true`."},
 		{"`profile:<name>`", "Apply a named processing profile from `profiles.json`. CLI parameters take precedence over profile values. See Section 6."},
+		{"`errorlog:txt|csv|json`", "When one or more files fail, write the detailed per-file error messages to an `ERROR.<ext>` file in the root of the output directory instead of the console, in the chosen format. Without this parameter, the details print to the console. See the Error Handling subsection."},
 		{"`verbose:true`", "Print a line for each file written, per-operation diagnostics, and a summary count on completion."},
 	})
 	d.H3("Processing Order")
@@ -509,6 +510,13 @@ func buildContent(d Formatter) {
 	d.Bullet("11. Write output file to directory, or to the ZIP archive if `zip:true`")
 	d.H3("Non-DICOM Files")
 	d.P("Files that do not carry the DICOM magic bytes (`DICM` at byte offset 128) are silently skipped regardless of file name or extension.")
+	d.H3("Error Handling")
+	d.P("Processing is resilient: a file that cannot be read, parsed, or written is recorded as a failure and skipped, and the run continues with the remaining files. One bad file never aborts an entire batch.")
+	d.P("On completion a summary is always printed in the form `N file(s) processed, M file(s) failed` (the failed clause appears only when at least one file failed). When any file fails, the command exits with a non-zero status so scripts and pipelines can detect partial failures.")
+	d.P("The detailed per-file error messages are, by default, printed to the console after the summary. Supplying `errorlog:<format>` instead redirects them into a file named `ERROR.<ext>` written in the root of the output directory (for ZIP output, alongside the archive). The file is created only when at least one file failed. Three formats are supported:")
+	d.Bullet("`errorlog:txt` — plain text: a `processed`/`failed` header followed by one `file: error` line per failure.")
+	d.Bullet("`errorlog:csv` — comma-separated values with a `file,error` header row, suitable for spreadsheets.")
+	d.Bullet("`errorlog:json` — a machine-readable object with `processed` and `failed` counts and an `errors` array of `{file, error}` entries.")
 	d.H3("Examples")
 	d.Code("dicomtool modify input:C:\\original output:C:\\deidentified\n    set:0010,0010=ANONYMOUS set:0010,0020=ID001\n    remove:0008,0080 noprivate:true verbose:true")
 	d.Code("dicomtool modify input:C:\\study output:converted\n    profile:anonymize dicomdir:true")
@@ -517,6 +525,7 @@ func buildContent(d Formatter) {
 	d.Code("dicomtool modify input:C:\\study output:C:\\out\\study.zip zip:true\n    set:PatientName=ANON noprivate:true")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out fixvr:correct\n    set:PatientName=ANON noprivate:true")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out workers:8\n    set:PatientName=ANON noprivate:true")
+	d.Code("dicomtool modify input:C:\\study output:C:\\deidentified\n    profile:base-deident errorlog:json")
 
 	// 4.3 tags
 	d.H2("4.3  tags")

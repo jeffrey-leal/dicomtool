@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.4.0
+
+### New Features
+
+#### Resilient Batch Processing (Continue on Error)
+- `modify` no longer aborts the entire run when a single file cannot be read, parsed, or written. Failing files are recorded and skipped, and processing continues with the rest of the batch.
+- A summary is always printed in the form `N file(s) processed, M file(s) failed` (the failed clause appears only when at least one file failed).
+- When any file fails, the command now exits with a non-zero status so scripts and pipelines can detect partial failures. Usage text is suppressed on a post-run failure so the output stays clean.
+
+#### Error Log File (`errorlog`)
+- Added `errorlog:txt|csv|json` to the `modify` command. On failure, the detailed per-file error messages are written to a file named `ERROR.<ext>` in the root of the output directory (for ZIP output, alongside the archive) instead of the console.
+- Without `errorlog`, the detailed messages print to the console after the summary, as before.
+- Formats: `txt` (plain text with a `processed`/`failed` header and one `file: error` line per failure), `csv` (a `file,error` header row plus one properly-quoted row per failure), and `json` (a machine-readable object with `processed`/`failed` counts and an `errors` array). The file is created only when at least one file failed.
+
+---
+
 ## v1.3.1
 
 ### Performance
