@@ -6,8 +6,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"fmt"
+	"image/png"
 	"os"
 	"strings"
+	"time"
 )
 
 // ── XML helpers ───────────────────────────────────────────────────────────────
@@ -21,7 +23,13 @@ func esc(s string) string {
 
 // ── Document builder ──────────────────────────────────────────────────────────
 
-type Doc struct{ b strings.Builder }
+type Doc struct {
+	b strings.Builder
+	// Logo dimensions in EMU (English Metric Units) for the cover image. Set
+	// before buildContent runs; hasLogo gates whether the image is emitted.
+	logoCX, logoCY int
+	hasLogo        bool
+}
 
 func (d *Doc) w(s string) { d.b.WriteString(s) }
 
@@ -42,6 +50,69 @@ func (d *Doc) runs(text string) {
 				`</w:rPr><w:t xml:space="preserve">` + esc(p) + `</w:t></w:r>`)
 		}
 	}
+}
+
+// Cover renders the title page: optional centered logo, then title, subtitle,
+// date, description, and the IRAT address — all centered horizontally. The
+// address paragraph carries the cover section's properties (page size/margins,
+// vertical centering, and no header/footer), so the whole block is centered on
+// the page and the running header/footer begin on the following section.
+func (d *Doc) Cover(title, subtitle, date, description string) {
+	if d.hasLogo {
+		d.w(`<w:p><w:pPr><w:spacing w:before="0" w:after="240"/><w:jc w:val="center"/></w:pPr>`)
+		d.w(`<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">`)
+		d.w(fmt.Sprintf(`<wp:extent cx="%d" cy="%d"/>`, d.logoCX, d.logoCY))
+		d.w(`<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="1" name="Logo"/>`)
+		d.w(`<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>`)
+		d.w(`<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">`)
+		d.w(`<pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="logo.png"/><pic:cNvPicPr/></pic:nvPicPr>`)
+		d.w(`<pic:blipFill><a:blip r:embed="rId6"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>`)
+		d.w(`<pic:spPr><a:xfrm><a:off x="0" y="0"/>`)
+		d.w(fmt.Sprintf(`<a:ext cx="%d" cy="%d"/>`, d.logoCX, d.logoCY))
+		d.w(`</a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>`)
+		d.w(`</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`)
+	}
+
+	// Title.
+	d.w(`<w:p><w:pPr><w:spacing w:before="0" w:after="120"/><w:jc w:val="center"/></w:pPr>` +
+		`<w:r><w:rPr><w:b/><w:color w:val="2E74B5"/><w:sz w:val="72"/><w:szCs w:val="72"/></w:rPr>` +
+		`<w:t xml:space="preserve">` + esc(title) + `</w:t></w:r></w:p>`)
+	// Subtitle.
+	d.w(`<w:p><w:pPr><w:spacing w:before="0" w:after="240"/><w:jc w:val="center"/></w:pPr>` +
+		`<w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr>` +
+		`<w:t xml:space="preserve">` + esc(subtitle) + `</w:t></w:r></w:p>`)
+	// Date (between subtitle and description).
+	d.w(`<w:p><w:pPr><w:spacing w:before="0" w:after="240"/><w:jc w:val="center"/></w:pPr>` +
+		`<w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr>` +
+		`<w:t xml:space="preserve">` + esc(date) + `</w:t></w:r></w:p>`)
+	// Description.
+	d.w(`<w:p><w:pPr><w:spacing w:before="0" w:after="480"/><w:jc w:val="center"/></w:pPr>` +
+		`<w:r><w:t xml:space="preserve">` + esc(description) + `</w:t></w:r></w:p>`)
+
+	// Address — the bottom element of the centered block. This paragraph also
+	// carries the cover section properties (vertical centering, no header/footer).
+	addr := []string{
+		"Image Response Assessment Team (IRAT)",
+		"550 North Broadway, Suite 300",
+		"The Sidney Kimmel Comprehensive Cancer Center",
+		"The Johns Hopkins University School of Medicine",
+		"Baltimore, MD 21205",
+	}
+	d.w(`<w:p><w:pPr><w:spacing w:before="0" w:after="0"/><w:jc w:val="center"/>`)
+	d.w(`<w:sectPr>` +
+		`<w:pgSz w:w="12240" w:h="15840"/>` +
+		`<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>` +
+		`<w:vAlign w:val="center"/>` +
+		`</w:sectPr>`)
+	d.w(`</w:pPr>`)
+	for i, line := range addr {
+		d.w(`<w:r><w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>` +
+			`<w:t xml:space="preserve">` + esc(line) + `</w:t></w:r>`)
+		if i < len(addr)-1 {
+			d.w(`<w:r><w:br/></w:r>`)
+		}
+	}
+	d.w(`</w:p>`)
 }
 
 func (d *Doc) TitleP(text string) {
@@ -146,6 +217,7 @@ func (d *Doc) Table(rows []Row) {
 // ── Formatter interface ───────────────────────────────────────────────────────
 
 type Formatter interface {
+	Cover(title, subtitle, date, description string)
 	TitleP(string)
 	SubtitleP(string)
 	H1(string)
@@ -164,6 +236,12 @@ type Formatter interface {
 type MDDoc struct{ b strings.Builder }
 
 func (d *MDDoc) w(s string) { d.b.WriteString(s) }
+func (d *MDDoc) Cover(title, subtitle, date, description string) {
+	d.w("# " + title + "\n\n")
+	d.w("**" + subtitle + "**\n\n")
+	d.w(date + "\n\n")
+	d.w(description + "\n\n---\n\n")
+}
 func (d *MDDoc) TitleP(text string)    { d.w("# " + text + "\n\n") }
 func (d *MDDoc) SubtitleP(text string) { d.w("**" + text + "**\n\n") }
 func (d *MDDoc) H1(text string)        { d.w("\n## " + text + "\n\n") }
@@ -195,10 +273,13 @@ const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
   <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
   <Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>
+  <Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>
+  <Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>
   <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
 </Types>`
 
@@ -213,6 +294,9 @@ const wordRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
   <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+  <Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>
+  <Relationship Id="rId6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
 </Relationships>`
 
 const settings = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -240,6 +324,40 @@ const numbering = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
     <w:abstractNumId w:val="0"/>
   </w:num>
 </w:numbering>`
+
+// header1 is the running header on content pages: software name at the left, a
+// "Page: N" field at a right tab stop (9360 = page width 12240 − 2×1440 margins),
+// and a rule beneath the whole header.
+const header1 = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:p>
+    <w:pPr>
+      <w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="auto"/></w:pBdr>
+      <w:tabs><w:tab w:val="right" w:pos="9360"/></w:tabs>
+      <w:spacing w:after="0"/>
+    </w:pPr>
+    <w:r><w:t>dicomtool</w:t></w:r>
+    <w:r><w:tab/></w:r>
+    <w:r><w:t xml:space="preserve">Page: </w:t></w:r>
+    <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+    <w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>
+    <w:r><w:fldChar w:fldCharType="end"/></w:r>
+  </w:p>
+</w:hdr>`
+
+// footer1 is the running footer on content pages: the NIH/NCI support line at a
+// font size small enough to fit on one line, with a rule above the whole footer.
+const footer1 = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:p>
+    <w:pPr>
+      <w:pBdr><w:top w:val="single" w:sz="6" w:space="1" w:color="auto"/></w:pBdr>
+      <w:spacing w:after="0"/>
+      <w:jc w:val="left"/>
+    </w:pPr>
+    <w:r><w:rPr><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr><w:t>The IRAT Lab is supported by the National Institutes of Health/The National Cancer Institute P30CA006973</w:t></w:r>
+  </w:p>
+</w:ftr>`
 
 const coreProps = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties
@@ -382,14 +500,9 @@ const stylesXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 func buildContent(d Formatter) {
 
 	// Title page
-	d.Space()
-	d.Space()
-	d.Space()
-	d.TitleP("dicomtool")
-	d.SubtitleP("Usage Manual  v1.4.1")
-	d.Space()
-	d.P("A command-line utility for inspecting and modifying DICOM medical imaging files.")
-	d.PageBreak()
+	d.Cover("dicomtool", "Usage Manual  v1.4.2",
+		time.Now().Format("January 2, 2006"),
+		"A command-line utility for inspecting and modifying DICOM medical imaging files.")
 
 	// 1. Introduction
 	d.H1("1  Introduction")
@@ -1038,18 +1151,40 @@ func main() {
 	}
 	fmt.Println("written:", mdOut)
 
-	// Generate DOCX
-	d := &Doc{}
+	// Generate DOCX. Load the cover logo first so its display dimensions are
+	// known when buildContent emits the cover.
+	const logoPath = "DICOMHdr Logo.png"
+	logoBytes, err := os.ReadFile(logoPath)
+	if err != nil {
+		panic(fmt.Sprintf("reading cover logo %q: %v (required build asset)", logoPath, err))
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(logoBytes))
+	if err != nil {
+		panic(fmt.Sprintf("decoding cover logo %q: %v", logoPath, err))
+	}
+	const emuPerInch = 914400
+	logoCX := int(2.5 * emuPerInch) // 2.5 in display width
+	logoCY := logoCX * cfg.Height / cfg.Width
+
+	d := &Doc{logoCX: logoCX, logoCY: logoCY, hasLogo: true}
 	buildContent(d)
 
 	docXML := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-		`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+		`<w:document ` +
+		`xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+		`xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ` +
+		`xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" ` +
+		`xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ` +
+		`xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
 		`<w:body>` +
 		d.b.String() +
 		`<w:sectPr>` +
+		`<w:headerReference w:type="default" r:id="rId4"/>` +
+		`<w:footerReference w:type="default" r:id="rId5"/>` +
 		`<w:pgSz w:w="12240" w:h="15840"/>` +
 		`<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"` +
 		` w:header="720" w:footer="720" w:gutter="0"/>` +
+		`<w:pgNumType w:start="1"/>` +
 		`</w:sectPr>` +
 		`</w:body></w:document>`
 
@@ -1064,6 +1199,15 @@ func main() {
 			panic(err)
 		}
 	}
+	addBytes := func(name string, content []byte) {
+		f, err := zw.Create(name)
+		if err != nil {
+			panic(err)
+		}
+		if _, err := f.Write(content); err != nil {
+			panic(err)
+		}
+	}
 	add("[Content_Types].xml", contentTypes)
 	add("_rels/.rels", rootRels)
 	add("word/_rels/document.xml.rels", wordRels)
@@ -1071,7 +1215,10 @@ func main() {
 	add("word/styles.xml", stylesXML)
 	add("word/numbering.xml", numbering)
 	add("word/settings.xml", settings)
+	add("word/header1.xml", header1)
+	add("word/footer1.xml", footer1)
 	add("docProps/core.xml", coreProps)
+	addBytes("word/media/image1.png", logoBytes)
 	if err := zw.Close(); err != nil {
 		panic(err)
 	}

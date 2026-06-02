@@ -1,9 +1,10 @@
 # dicomtool
 
-**Usage Manual  v1.4.1**
+**Usage Manual  v1.4.2**
+
+June 2, 2026
 
 A command-line utility for inspecting and modifying DICOM medical imaging files.
-
 
 ---
 

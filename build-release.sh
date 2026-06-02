@@ -2,6 +2,9 @@
 set -euo pipefail
 export PATH="/c/Program Files/Go/bin:$PATH"
 
+echo "Generating documentation (dicomtool-manual.md and .docx)..."
+go run ./gendoc
+
 echo "Building dicomtool release for all platforms..."
 
 go build -ldflags="-s -w" -o dicomtool.exe .

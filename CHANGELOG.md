@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.4.2
+
+### Changed
+
+#### Branded DOCX Cover, Header, and Footer
+- The generated DOCX user manual now has an IRAT-branded title page: the program logo above the title, the generation date (formatted `Month D, YYYY`) between the subtitle and description, and the Image Response Assessment Team institutional address at the bottom — all centered horizontally and vertically on the page.
+- Content pages now carry a running header (`dicomtool` at the left, `Page: N` at the right, with a rule beneath) and footer (the NIH/NCI grant support line, with a rule above). Page numbering starts at 1 on the first content page; the cover page is unnumbered and has no header or footer.
+- The Markdown manual is unchanged apart from the added generation date on its cover.
+
+#### Build Script Generates Documentation
+- `build-release.sh` now runs the documentation generator (`go run ./gendoc`) before compiling, so the manual is regenerated as part of a release build.
+
+---
+
 ## v1.4.1
 
 ### Changed
