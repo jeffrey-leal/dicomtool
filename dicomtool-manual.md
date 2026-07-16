@@ -1,8 +1,8 @@
 # dicomtool
 
-**Usage Manual  v1.4.2**
+**Usage Manual  v1.4.3**
 
-June 2, 2026
+July 16, 2026
 
 A command-line utility for inspecting and modifying DICOM medical imaging files.
 
@@ -1299,7 +1299,7 @@ Maps short alias names to DICOM tag identifiers. Any alias defined here can be u
 
 ### A.2  profiles.json
 
-Defines one built-in profile. `base-deident` is a comprehensive de-identification baseline: it sets patient identity fields to anonymous values, masks the date of birth to year only, removes all private tags, corrects non-standard Value Representations, remaps every study/series/instance UID consistently, and removes over 130 tags commonly associated with identifying information.
+Defines one built-in profile. `base-deident` is a comprehensive de-identification baseline: it sets patient identity fields to anonymous values, masks the date of birth to year only, removes all private tags, corrects non-standard Value Representations, remaps every study/series/instance UID consistently, and removes over 100 tags commonly associated with identifying information.
 
 ```
 {
@@ -1325,12 +1325,6 @@ Defines one built-in profile. `base-deident` is a comprehensive de-identificatio
       "28,300",
       "32,1031","32,1032","32,1033",
       "38,10",  "38,300", "38,400", "38,500", "38,4000",
-      "40,275", "40,1001","40,1002","40,1004","40,1005",
-      "40,2008","40,2009","40,2010","40,2011","40,2016",
-      "40,2017","40,2400","40,4006","40,4009","40,4010",
-      "40,4020","40,4021","40,A057","40,A060","40,A066",
-      "40,A067","40,A068","40,A070","40,A073","40,A075",
-      "40,A078","40,A123","40,A160","40,A730",
       "50,10",
       "70,1",   "70,2",   "70,3",   "70,4",   "70,5",
       "70,6",   "70,8",   "70,9",   "70,10",  "70,11",

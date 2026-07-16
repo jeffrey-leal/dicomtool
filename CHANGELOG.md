@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.4.3
+
+### Changed
+
+#### Reduced Default `base-deident` Removal List
+- The built-in `base-deident` profile no longer removes 30 group `0040` tags: order-entry fields (`OrderEnteredBy`, `OrderCallbackPhoneNumber`, `OrderCallbackTelecomInformation`, `PlacerOrderNumberImagingServiceRequest`, `FillerOrderNumberImagingServiceRequest`, `ImagingServiceRequestComments`), requested-procedure fields (`RequestAttributesSequence`, `RequestedProcedureID`, `ReasonForTheRequestedProcedure`, `PatientTransportArrangements`, `RequestedProcedureLocation`), performer/scheduling fields (`MultipleCopiesFlag`, `HumanPerformerCodeSequence`, `ScheduledProcedureStepModificationDateTime`, `InputAvailabilityFlag`, `InputInformationSequence`), and Structured Report content tags (`VerifyingObserverSequence`, `VerifyingObserverName`, `AuthorObserverSequence`, `PersonName`, `TextValue`, `ContentSequence`, and several retired trial identifier tags).
+- The default removal list now covers 103 tags (previously over 130). Note that some of the removed entries (e.g. `VerifyingObserverName`, SR `PersonName`, SR `TextValue`) can carry identifying information — review the updated default against your de-identification requirements before relying on it.
+- Existing `~/.dicomtool/profiles.json` files are not modified automatically; run `dicomtool install` to refresh the defaults.
+
+---
+
 ## v1.4.2
 
 ### Changed

@@ -56,6 +56,6 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version of dicomtool",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Fprintln(os.Stdout, "dicomtool v1.4.2")
+		fmt.Fprintln(os.Stdout, "dicomtool v1.4.3")
 	},
 }
