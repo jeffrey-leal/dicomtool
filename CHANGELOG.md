@@ -1,11 +1,22 @@
 # Changelog
 
+## v1.4.4
+
+### Changed
+
+#### Reverted `base-deident` Removal List; Added `base-deident-keep-order` Profile
+- The 29 group `0040` tags dropped from `base-deident` in v1.4.3 are restored, so the built-in de-identification baseline is back to removing over 130 tags — the reduction risked leaving identifying content (e.g. `VerifyingObserverName`, SR `PersonName`/`TextValue`) in de-identified output.
+- Added a new built-in profile, `base-deident-keep-order`, which derives from `base-deident` (`base:base-deident`) and uses `keep` to restore just those 29 tags. Use it for workflows that need order-entry, requested-procedure, or Structured Report content and have separately assessed that content as non-identifying for their use case.
+- Existing `~/.dicomtool/profiles.json` files are not modified automatically; run `dicomtool install` to refresh the defaults.
+
+---
+
 ## v1.4.3
 
 ### Changed
 
 #### Reduced Default `base-deident` Removal List
-- The built-in `base-deident` profile no longer removes 30 group `0040` tags: order-entry fields (`OrderEnteredBy`, `OrderCallbackPhoneNumber`, `OrderCallbackTelecomInformation`, `PlacerOrderNumberImagingServiceRequest`, `FillerOrderNumberImagingServiceRequest`, `ImagingServiceRequestComments`), requested-procedure fields (`RequestAttributesSequence`, `RequestedProcedureID`, `ReasonForTheRequestedProcedure`, `PatientTransportArrangements`, `RequestedProcedureLocation`), performer/scheduling fields (`MultipleCopiesFlag`, `HumanPerformerCodeSequence`, `ScheduledProcedureStepModificationDateTime`, `InputAvailabilityFlag`, `InputInformationSequence`), and Structured Report content tags (`VerifyingObserverSequence`, `VerifyingObserverName`, `AuthorObserverSequence`, `PersonName`, `TextValue`, `ContentSequence`, and several retired trial identifier tags).
+- The built-in `base-deident` profile no longer removes 29 group `0040` tags: order-entry fields (`OrderEnteredBy`, `OrderCallbackPhoneNumber`, `OrderCallbackTelecomInformation`, `PlacerOrderNumberImagingServiceRequest`, `FillerOrderNumberImagingServiceRequest`, `ImagingServiceRequestComments`), requested-procedure fields (`RequestAttributesSequence`, `RequestedProcedureID`, `ReasonForTheRequestedProcedure`, `PatientTransportArrangements`, `RequestedProcedureLocation`), performer/scheduling fields (`MultipleCopiesFlag`, `HumanPerformerCodeSequence`, `ScheduledProcedureStepModificationDateTime`, `InputAvailabilityFlag`, `InputInformationSequence`), and Structured Report content tags (`VerifyingObserverSequence`, `VerifyingObserverName`, `AuthorObserverSequence`, `PersonName`, `TextValue`, `ContentSequence`, and several retired trial identifier tags).
 - The default removal list now covers 103 tags (previously over 130). Note that some of the removed entries (e.g. `VerifyingObserverName`, SR `PersonName`, SR `TextValue`) can carry identifying information — review the updated default against your de-identification requirements before relying on it.
 - Existing `~/.dicomtool/profiles.json` files are not modified automatically; run `dicomtool install` to refresh the defaults.
 
