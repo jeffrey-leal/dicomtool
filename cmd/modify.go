@@ -37,6 +37,11 @@ Parameters:
   dob:<mask>                Mask the Patient Birth Date (0010,0030). The mask
                             must be 8 chars (YYYYMMDD); digit characters replace
                             the corresponding position, others preserve it.
+  shiftdays:<n>             Shift every DA (Date) and DT (DateTime) field by n
+                            days (n may be negative, zero, or positive). For DT
+                            fields, only the date portion moves; the time
+                            component is preserved. Patient Birth Date is
+                            never affected by shiftdays — use dob: for that.
   uid:<suffix>              Append .<suffix> to every UID field. Suffix must be
                             digits only [1-9]. Transfer Syntax UIDs are excluded.
                             Mutually exclusive with remapuids.
@@ -71,14 +76,16 @@ Files that fail are skipped; processing continues. A summary
 non-zero when any file failed.
 
 Processing order per file:
-  1. Parse   2. fixvr   3. ignoretype     4. ignoremodality   5. noprivate
-  6. remove  7. dob     8. uid/remapuids  9. maskrows          10. set   11. write
+  1. Parse   2. fixvr   3. ignoretype  4. ignoremodality  5. noprivate
+  6. remove  7. shiftdays  8. dob      9. uid/remapuids   10. maskrows
+  11. set    12. write
 
 Examples:
   dicomtool modify input:C:\in output:C:\out set:PatientName=ANON noprivate:true
   dicomtool modify input:C:\in output:C:\out profile:base-deident
   dicomtool modify input:C:\in output:C:\out.zip zip:true set:PatientName=ANON
-  dicomtool modify input:C:\in output:C:\out fixvr:correct verbose:true`,
+  dicomtool modify input:C:\in output:C:\out fixvr:correct verbose:true
+  dicomtool modify input:C:\in output:C:\out shiftdays:-45 noprivate:true`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runModify()
@@ -137,6 +144,13 @@ func runModify() error {
 		maskRows = n
 	}
 
+	shiftDaysStr := paramOne("shiftdays")
+	if shiftDaysStr != "" {
+		if _, err := strconv.Atoi(shiftDaysStr); err != nil {
+			return fmt.Errorf("shiftdays %q must be an integer", shiftDaysStr)
+		}
+	}
+
 	numWorkers := runtime.NumCPU()
 	if s := paramOne("workers"); s != "" {
 		n, err := strconv.Atoi(s)
@@ -159,9 +173,9 @@ func runModify() error {
 		dobMask != "" || uidSuffix != "" || maskRows > 0 ||
 		boolParam("noprivate", false) || fixvrMode != "" ||
 		paramOne("ignoretype") != "" || paramOne("ignoremodality") != "" ||
-		len(Opts.PerModality) > 0 || remapUIDs
+		len(Opts.PerModality) > 0 || remapUIDs || shiftDaysStr != ""
 	if !hasAction {
-		return errors.New("at least one actionable parameter is required (set, remove, dob, uid, maskrows, noprivate, ignoretype, ignoremodality, remapuids) — or specify a profile that contains one")
+		return errors.New("at least one actionable parameter is required (set, remove, dob, uid, maskrows, noprivate, ignoretype, ignoremodality, remapuids, shiftdays) — or specify a profile that contains one")
 	}
 
 	if dobMask != "" && len(dobMask) != 8 {
@@ -331,7 +345,7 @@ func runModify() error {
 				if srcFile == nil {
 					continue
 				}
-				skipped, ds, perr := processFile(srcFile, edits, removals, dobMask, uidSuffix, removePrivate, maskRows, ignoreTypes, ignoreModalities, fixvrMode, perModOverrides, uidRemap)
+				skipped, ds, perr := processFile(srcFile, edits, removals, dobMask, uidSuffix, shiftDaysStr, removePrivate, maskRows, ignoreTypes, ignoreModalities, fixvrMode, perModOverrides, uidRemap)
 				if perr != nil {
 					recordFailure(job.path, fmt.Errorf("process: %w", perr))
 					continue
@@ -539,6 +553,7 @@ type modalityOverride struct {
 	keep          []tag.Tag
 	dobMask       string
 	uidSuffix     string
+	shiftDays     string
 	fixvrMode     string
 	maskRows      int
 	removePrivate bool
@@ -581,6 +596,7 @@ func buildModalityOverrides(perMod map[string]Profile) map[string]modalityOverri
 		}
 		ov.dobMask = p.DOB
 		ov.uidSuffix = p.UIDSuffix
+		ov.shiftDays = p.ShiftDays
 		ov.fixvrMode = p.FixVR
 		ov.maskRows = p.MaskRows
 		ov.removePrivate = p.Priv
@@ -630,7 +646,7 @@ func filterKeep(removals []tag.Tag, keep []tag.Tag) []tag.Tag {
 // all edits. It returns (true, zero, nil) when the file should be skipped, or
 // (false, transformed dataset, nil) on success. The caller is responsible for
 // writing the returned dataset to its destination.
-func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uidSuffix string, removePrivate bool, maskRows int, ignoreTypes, ignoreModalities []string, fixvrMode string, perModOverrides map[string]modalityOverride, uidRemap *uidRemapper) (skipped bool, ds dicom.Dataset, err error) {
+func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uidSuffix, shiftDaysStr string, removePrivate bool, maskRows int, ignoreTypes, ignoreModalities []string, fixvrMode string, perModOverrides map[string]modalityOverride, uidRemap *uidRemapper) (skipped bool, ds dicom.Dataset, err error) {
 	info, err := src.Stat()
 	if err != nil {
 		src.Close()
@@ -683,6 +699,9 @@ func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uid
 					if ov.uidSuffix != "" {
 						uidSuffix = ov.uidSuffix
 					}
+					if ov.shiftDays != "" {
+						shiftDaysStr = ov.shiftDays
+					}
 					if ov.fixvrMode != "" {
 						fixvrMode = ov.fixvrMode
 					}
@@ -714,6 +733,14 @@ func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uid
 			removalSet[t] = struct{}{}
 		}
 		ds.Elements = pruneElements(ds.Elements, removalSet, removePrivate)
+	}
+
+	if shiftDaysStr != "" {
+		n, err := strconv.Atoi(shiftDaysStr) // re-validated defensively — a profile could carry a bad value
+		if err != nil {
+			return false, ds, fmt.Errorf("shiftdays %q must be an integer", shiftDaysStr)
+		}
+		applyDateShift(ds.Elements, n)
 	}
 
 	if dobMask != "" {
@@ -921,6 +948,67 @@ func applyUIDRemap(elements []*dicom.Element, r *uidRemapper) {
 			}
 		}
 	}
+}
+
+// applyDateShift shifts every DA and DT element's leading YYYYMMDD date
+// component by shiftDays (positive, negative, or zero) at any nesting depth.
+// PatientBirthDate is always left untouched — that field is the dedicated
+// responsibility of the dob: parameter, independent of shiftdays. Values that
+// don't parse as a full 8-digit date are left unchanged.
+func applyDateShift(elements []*dicom.Element, shiftDays int) {
+	for _, elem := range elements {
+		if elem.Value != nil && elem.Value.ValueType() == dicom.Sequences {
+			if seqItems, ok := elem.Value.GetValue().([]*dicom.SequenceItemValue); ok {
+				for _, item := range seqItems {
+					if itemElems, ok2 := item.GetValue().([]*dicom.Element); ok2 {
+						applyDateShift(itemElems, shiftDays)
+					}
+				}
+			}
+			continue
+		}
+		vr := elem.RawValueRepresentation
+		if vr != "DA" && vr != "DT" {
+			continue
+		}
+		if elem.Tag == tag.PatientBirthDate {
+			continue
+		}
+		vals, ok := elem.Value.GetValue().([]string)
+		if !ok {
+			continue
+		}
+		changed := false
+		out := make([]string, len(vals))
+		for i, v := range vals {
+			if shifted, ok := shiftDateString(v, shiftDays); ok {
+				out[i] = shifted
+				changed = true
+			} else {
+				out[i] = v
+			}
+		}
+		if changed {
+			if nv, err := dicom.NewValue(out); err == nil {
+				elem.Value = nv
+			}
+		}
+	}
+}
+
+// shiftDateString shifts the leading YYYYMMDD component of v by shiftDays,
+// preserving any trailing characters unchanged (the time/fraction/timezone
+// suffix of a DT value). Returns ok=false — leave v unchanged — when v is
+// shorter than 8 characters or the date portion fails to parse.
+func shiftDateString(v string, shiftDays int) (string, bool) {
+	if len(v) < 8 {
+		return v, false
+	}
+	t, err := time.Parse("20060102", v[:8])
+	if err != nil {
+		return v, false
+	}
+	return t.AddDate(0, 0, shiftDays).Format("20060102") + v[8:], true
 }
 
 // applyDOBMask reads the existing PatientBirthDate (0010,0030), applies mask,

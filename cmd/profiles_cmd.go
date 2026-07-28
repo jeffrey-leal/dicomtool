@@ -67,11 +67,18 @@ var profilesAddCmd = &cobra.Command{
 		name := args[0]
 
 		p := Profile{
-			DOB:      paramOne("dob"),
+			DOB:       paramOne("dob"),
 			UIDSuffix: paramOne("uid"),
-			Priv:     boolParam("noprivate", false),
-			Dicomdir: boolParam("dicomdir", false),
-			Verbose:  boolParam("verbose", false),
+			ShiftDays: paramOne("shiftdays"),
+			Priv:      boolParam("noprivate", false),
+			Dicomdir:  boolParam("dicomdir", false),
+			Verbose:   boolParam("verbose", false),
+		}
+
+		if s := p.ShiftDays; s != "" {
+			if _, err := strconv.Atoi(s); err != nil {
+				return fmt.Errorf("shiftdays %q must be an integer", s)
+			}
 		}
 
 		if s := paramOne("maskrows"); s != "" {

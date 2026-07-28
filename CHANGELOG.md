@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.5.0
+
+### New Features
+
+#### Date Shifting (`shiftdays:<n>`)
+- Added `shiftdays:<n>` to the `modify` command. It shifts every DA (Date) and DT (DateTime) element by `n` days, `n` may be negative, zero, or positive. This preserves the interval between dates within a study (e.g. days between a baseline and follow-up exam) without exposing the real calendar dates — a common de-identification technique distinct from the existing `dob:` mask, which replaces specific digit positions of a single field rather than shifting a value.
+- For DT fields (e.g. `AcquisitionDateTime`), only the leading `YYYYMMDD` date component moves; the time, fraction, and timezone portion is preserved unchanged.
+- Patient Birth Date (0010,0030) is never touched by `shiftdays` — it remains the dedicated responsibility of the existing `dob:` parameter, so the two can be combined freely with no ordering dependency.
+- Recurses into sequences at every nesting depth, matching the existing behaviour of `remove`, `noprivate`, `fixvr`, and `remapuids`.
+- Available as a profile field (`"shiftdays": "<n>"`) with the usual CLI-override, base-profile-inheritance, and per-modality-override precedence rules, and can be set via `dicomtool profiles add ... shiftdays:<n>`.
+
+---
+
 ## v1.4.4
 
 ### Changed

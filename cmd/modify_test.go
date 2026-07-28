@@ -315,6 +315,71 @@ func TestApplyUIDRemap_ConsistentAndReferentiallyIntact(t *testing.T) {
 	}
 }
 
+func TestShiftDateString(t *testing.T) {
+	tests := []struct {
+		name      string
+		in        string
+		shiftDays int
+		want      string
+		wantOK    bool
+	}{
+		{"positive shift", "20200115", 10, "20200125", true},
+		{"negative shift", "20200115", -10, "20200105", true},
+		{"month rollover", "20200130", 5, "20200204", true},
+		{"year rollover", "20201228", 10, "20210107", true},
+		{"leap year Feb 29 plus one", "20200229", 1, "20200301", true},
+		{"zero shift is a no-op", "20200115", 0, "20200115", true},
+		{"DT value keeps time/fraction/zone suffix", "20200115120000.000000+0000", -1, "20200114120000.000000+0000", true},
+		{"too short", "2020011", 1, "2020011", false},
+		{"empty", "", 1, "", false},
+		{"non-numeric date portion", "2020AB15", 1, "2020AB15", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := shiftDateString(tc.in, tc.shiftDays)
+			if ok != tc.wantOK {
+				t.Fatalf("shiftDateString(%q, %d) ok = %v, want %v", tc.in, tc.shiftDays, ok, tc.wantOK)
+			}
+			if got != tc.want {
+				t.Fatalf("shiftDateString(%q, %d) = %q, want %q", tc.in, tc.shiftDays, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyDateShift_RecursesAndSkipsPatientBirthDate(t *testing.T) {
+	nested := []*dicom.Element{
+		strElem(t, tag.StudyDate, "20200115"), // DA, nested — must shift too
+	}
+	elems := []*dicom.Element{
+		strElem(t, tag.StudyDate, "20200115"),           // DA — shift
+		strElem(t, tag.AcquisitionDateTime, "20200115120000.000000+0000"), // DT — shift date, keep time
+		strElem(t, tag.PatientBirthDate, "19800101"),    // DA — must NOT shift
+		strElem(t, tagPatientName, "Doe^Jane"),          // non-date — must NOT change
+		seqElem(t, tagRefImageSeq, nested),
+	}
+
+	applyDateShift(elems, 10)
+
+	if got := strValue(t, findTag(elems, tag.StudyDate)); got != "20200125" {
+		t.Fatalf("StudyDate = %q, want %q", got, "20200125")
+	}
+	if got := strValue(t, findTag(elems, tag.AcquisitionDateTime)); got != "20200125120000.000000+0000" {
+		t.Fatalf("AcquisitionDateTime = %q, want date shifted with time preserved", got)
+	}
+	if got := strValue(t, findTag(elems, tag.PatientBirthDate)); got != "19800101" {
+		t.Fatalf("PatientBirthDate was shifted: %q, want unchanged", got)
+	}
+	if got := strValue(t, findTag(elems, tagPatientName)); got != "Doe^Jane" {
+		t.Fatalf("PatientName was changed: %q", got)
+	}
+
+	items := nestedItems(t, findTag(elems, tagRefImageSeq))
+	if got := strValue(t, findTag(items[0], tag.StudyDate)); got != "20200125" {
+		t.Fatalf("nested StudyDate = %q, want %q (recursion into sequence failed)", got, "20200125")
+	}
+}
+
 func TestUIDRemapper_ConcurrentMapUID(t *testing.T) {
 	r := newUIDRemapper()
 	var wg sync.WaitGroup

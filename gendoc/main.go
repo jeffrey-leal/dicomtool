@@ -500,7 +500,7 @@ const stylesXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 func buildContent(d Formatter) {
 
 	// Title page
-	d.Cover("dicomtool", "Usage Manual  v1.4.4",
+	d.Cover("dicomtool", "Usage Manual  v1.5.0",
 		time.Now().Format("January 2, 2006"),
 		"A command-line utility for inspecting and modifying DICOM medical imaging files.")
 
@@ -585,7 +585,7 @@ func buildContent(d Formatter) {
 	d.H2("4.2  modify")
 	d.P("Reads every DICOM file under an input directory tree, applies the specified modifications, and writes the results to an output directory, preserving the original folder structure.")
 	d.H3("Syntax")
-	d.Code("dicomtool modify input:<dir> output:<dir>\n    [set:<tag>=<value> ...]\n    [remove:<tag> ...]\n    [dob:<mask>]\n    [uid:<suffix>]\n    [remapuids:true]\n    [noprivate:true]\n    [ignoretype:<types>]\n    [ignoremodality:<modalities>]\n    [maskrows:<n>]\n    [fixvr:correct|skip|passthrough]\n    [workers:<n>]\n    [zip:true]\n    [dicomdir:true]\n    [profile:<name>]\n    [verbose:true]")
+	d.Code("dicomtool modify input:<dir> output:<dir>\n    [set:<tag>=<value> ...]\n    [remove:<tag> ...]\n    [dob:<mask>]\n    [shiftdays:<n>]\n    [uid:<suffix>]\n    [remapuids:true]\n    [noprivate:true]\n    [ignoretype:<types>]\n    [ignoremodality:<modalities>]\n    [maskrows:<n>]\n    [fixvr:correct|skip|passthrough]\n    [workers:<n>]\n    [zip:true]\n    [dicomdir:true]\n    [profile:<name>]\n    [verbose:true]")
 	d.H3("Parameters")
 	d.Table([]Row{
 		{"Parameter", "Description"},
@@ -594,6 +594,7 @@ func buildContent(d Formatter) {
 		{"`set:<tag>=<value>`", "Set the specified tag to the given value. `<tag>` may be a raw `GGGG,EEEE` identifier or a defined alias. Repeatable."},
 		{"`remove:<tag>`", "Remove the specified tag entirely from every output file. `<tag>` may be a raw identifier or alias. Repeatable."},
 		{"`dob:<mask>`", "Apply an 8-character positional mask to the Patient Date of Birth field (0010,0030). Digit characters in the mask overwrite the corresponding position; any other character preserves the original digit. Format: `YYYYMMDD`."},
+		{"`shiftdays:<n>`", "Shift every DA (Date) and DT (DateTime) field in each file by `n` days. `n` may be negative, zero, or positive. For DT fields, only the leading date component moves; the time, fraction, and timezone portion is preserved unchanged. Patient Date of Birth (0010,0030) is never affected by `shiftdays:` — use `dob:` for that field instead."},
 		{"`uid:<suffix>`", "Append `.<suffix>` to every UID field in each file. If the result would exceed 64 characters the last dot-delimited component is replaced instead of appended. `<suffix>` must contain digits only. Transfer Syntax UIDs are excluded. Mutually exclusive with `remapuids:true`."},
 		{"`remapuids:true`", "Replace every study, series, and instance UID — and all references to them — with a freshly generated UID. Remapping is consistent across the entire run: the same source UID always maps to the same new UID in every file, so study/series/instance relationships and internal cross-references are preserved while linkage to the source is severed. SOP Class UIDs, Transfer Syntax UIDs, and the Implementation Class UID are left unchanged so files remain valid. Cannot be combined with `uid:`."},
 		{"`noprivate:true`", "Remove all private tags (those with an odd group number) before writing output."},
@@ -616,11 +617,12 @@ func buildContent(d Formatter) {
 	d.Bullet("4. Skip file if Modality (0008,0060) matches any `ignoremodality:` value (file is not written to output)")
 	d.Bullet("5. Remove private tags (if `noprivate:true`)")
 	d.Bullet("6. Apply explicit `remove:` removals")
-	d.Bullet("7. Apply DOB mask (if `dob:` supplied)")
-	d.Bullet("8. Apply UID suffix (if `uid:` supplied) or remap UIDs (if `remapuids:true`)")
-	d.Bullet("9. Apply row mask (if `maskrows:` supplied)")
-	d.Bullet("10. Apply all `set:` edits")
-	d.Bullet("11. Write output file to directory, or to the ZIP archive if `zip:true`")
+	d.Bullet("7. Shift DA/DT date fields (if `shiftdays:` supplied)")
+	d.Bullet("8. Apply DOB mask (if `dob:` supplied)")
+	d.Bullet("9. Apply UID suffix (if `uid:` supplied) or remap UIDs (if `remapuids:true`)")
+	d.Bullet("10. Apply row mask (if `maskrows:` supplied)")
+	d.Bullet("11. Apply all `set:` edits")
+	d.Bullet("12. Write output file to directory, or to the ZIP archive if `zip:true`")
 	d.H3("Non-DICOM Files")
 	d.P("Files that do not carry the DICOM magic bytes (`DICM` at byte offset 128) are silently skipped regardless of file name or extension.")
 	d.H3("Error Handling")
@@ -639,6 +641,7 @@ func buildContent(d Formatter) {
 	d.Code("dicomtool modify input:C:\\study output:C:\\out fixvr:correct\n    set:PatientName=ANON noprivate:true")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out workers:8\n    set:PatientName=ANON noprivate:true")
 	d.Code("dicomtool modify input:C:\\study output:C:\\deidentified\n    profile:base-deident errorlog:json")
+	d.Code("dicomtool modify input:C:\\study output:C:\\deidentified\n    shiftdays:-45 noprivate:true")
 
 	// 4.3 tags
 	d.H2("4.3  tags")
@@ -895,12 +898,20 @@ func buildContent(d Formatter) {
 	d.P("Retain year and month, replace only the day:")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out dob:YYYYMM01")
 
-	d.H2("8.7  Appending a UID Suffix")
+	d.H2("8.7  Shifting Date Fields")
+	d.P("The `shiftdays:<n>` parameter shifts every DA (Date) and DT (DateTime) field by `n` days, preserving the interval between dates within a study (e.g. days between a baseline and follow-up exam) without exposing the real calendar dates. `n` may be negative, zero, or positive. Patient Date of Birth (0010,0030) is never touched by `shiftdays:` -- combine it with `dob:` if the birth date also needs to be masked.")
+	d.P("Shift every date back by 45 days:")
+	d.Code("dicomtool modify input:C:\\study output:C:\\out shiftdays:-45")
+	d.P("Combine with other de-identification steps:")
+	d.Code("dicomtool modify input:C:\\study output:C:\\out\n    set:PatientName=ANON dob:YYYY0101 noprivate:true shiftdays:-45")
+	d.P("For a DT field such as AcquisitionDateTime (0008,002A), only the leading `YYYYMMDD` date component is shifted; the time, fraction, and timezone portion is left exactly as it was.")
+
+	d.H2("8.8  Appending a UID Suffix")
 	d.P("Append `.9999` to all UID fields. If a UID would exceed 64 characters, the last dot-delimited component is replaced instead of appended:")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out uid:9999")
 	d.P("Transfer Syntax UIDs (0002,0010) and Referenced Transfer Syntax UIDs (0004,1512) are excluded from modification as they describe the file encoding.")
 
-	d.H2("8.8  Skipping Files by Image Type or Modality")
+	d.H2("8.9  Skipping Files by Image Type or Modality")
 	d.P("Use `ignoretype:` to skip files whose Image Type tag (0008,0008) contains any of the supplied values, and `ignoremodality:` to skip files whose Modality tag (0008,0060) matches any of the supplied values. Both parameters accept comma-delimited lists and comparisons are case-insensitive.")
 	d.P("Skip Secondary Capture files by modality and image type:")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out\n    set:PatientName=ANON ignoremodality:SC ignoretype:SECONDARY")
@@ -909,7 +920,7 @@ func buildContent(d Formatter) {
 	d.P("Skipped files are omitted from the output. With `verbose:true` a line is printed for each skipped file:")
 	d.Code("skipped (secondary capture): C:\\study\\series1\\screen001.dcm")
 
-	d.H2("8.9  Masking Pixel Rows")
+	d.H2("8.10  Masking Pixel Rows")
 	d.P("The `maskrows:<n>` parameter zeros out the first `n` pixel rows from the top of every image frame. This is useful for removing patient demographics or institution names that are burned into the image pixel data rather than stored as separate DICOM tags.")
 	d.P("Zero the top 20 rows of each frame:")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out maskrows:20")
@@ -920,36 +931,36 @@ func buildContent(d Formatter) {
 	d.P("Note: `maskrows` operates only on uncompressed (native) pixel data. Files with JPEG or JPEG-LS compression are skipped with a warning when `verbose:true` is set:")
 	d.Code("  maskrows: pixel data is compressed (encapsulated) -- skipping")
 
-	d.H2("8.10  Full De-identification Without a Profile")
+	d.H2("8.11  Full De-identification Without a Profile")
 	d.Code("dicomtool modify input:C:\\original output:C:\\deidentified\n    set:PatientName=ANON\n    set:PatientID=ANON001\n    set:AccessionNumber=\n    remove:0008,0080\n    remove:0008,0081\n    remove:0008,0090\n    dob:YYYY0101\n    uid:9999\n    noprivate:true\n    ignoremodality:SC\n    ignoretype:SECONDARY\n    maskrows:20\n    verbose:true")
 
-	d.H2("8.11  Applying a Profile")
+	d.H2("8.12  Applying a Profile")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out profile:anonymize")
 
-	d.H2("8.12  Overriding a Profile Parameter")
+	d.H2("8.13  Overriding a Profile Parameter")
 	d.P("The `PatientID` value from the profile is replaced by `STUDY42`; all other profile parameters apply unchanged:")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out profile:anonymize set:PatientID=STUDY42")
 
-	d.H2("8.13  Generating a DICOMDIR")
+	d.H2("8.14  Generating a DICOMDIR")
 	d.P("Generate a DICOMDIR index alongside the modified files:")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out profile:anonymize dicomdir:true")
 	d.P("A `DICOMDIR` file is written to the root of the output directory after all files have been processed. It is formatted as Explicit VR Little Endian and conforms to PS3.3 of the DICOM standard.")
 
-	d.H2("8.14  Relative Output Path")
+	d.H2("8.15  Relative Output Path")
 	d.P("A relative `output:` path is resolved relative to the `input:` directory. The following two invocations are equivalent when the input is `C:\\study`:")
 	d.Code("dicomtool modify input:C:\\study output:deidentified\ndicomtool modify input:C:\\study output:C:\\study\\deidentified")
 
-	d.H2("8.15  Managing Tag Aliases")
+	d.H2("8.16  Managing Tag Aliases")
 	d.Code("# Add aliases\ndicomtool tags add PatientName 0010,0010\ndicomtool tags add InstitutionName 0008,0080\n\n# List all aliases\ndicomtool tags list\n\n# Remove an alias\ndicomtool tags remove InstitutionName")
 
-	d.H2("8.16  Creating and Using a Profile")
+	d.H2("8.17  Creating and Using a Profile")
 	d.Code("# Create a profile\ndicomtool profiles add anonymize\n    set:PatientName=ANON\n    set:PatientID=ANON\n    set:AccessionNumber=\n    dob:YYYY0101\n    noprivate:true\n    maskrows:20\n\n# List all profiles\ndicomtool profiles list\n\n# Inspect the profile definition\ndicomtool profiles show anonymize\n\n# Apply it\ndicomtool modify input:C:\\study output:C:\\out profile:anonymize\n\n# Remove the profile\ndicomtool profiles remove anonymize")
 
-	d.H2("8.17  Using Profile Inheritance")
+	d.H2("8.18  Using Profile Inheritance")
 	d.P("Create a base de-identification profile, then derive a study-specific variant that inherits all base settings but overrides the Patient ID:")
 	d.Code("# Base profile\ndicomtool profiles add anonymize\n    set:PatientName=ANON\n    set:PatientID=ANON\n    set:AccessionNumber=\n    dob:YYYY0101\n    noprivate:true\n\n# Derived profile -- inherits everything from anonymize,\n# but assigns a specific Patient ID for this study\ndicomtool profiles add study42 base:anonymize set:PatientID=STUDY0042\n\n# Applying study42 is equivalent to applying anonymize\n# with set:PatientID=STUDY0042 overriding the ANON value\ndicomtool modify input:C:\\study output:C:\\out profile:study42")
 
-	d.H2("8.18  Packaging Output as a ZIP Archive")
+	d.H2("8.19  Packaging Output as a ZIP Archive")
 	d.P("Use `zip:true` to write all processed DICOM files into a single ZIP archive instead of an output directory. The archive preserves the original folder structure of the input tree.")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out\\study.zip zip:true\n    set:PatientName=ANON noprivate:true")
 	d.P("If the `output:` path does not end in `.zip`, the extension is appended automatically:")
@@ -963,7 +974,7 @@ func buildContent(d Formatter) {
 	d.Bullet("Each ZIP entry carries the creation timestamp of the run, so extracted files have normal filesystem date attributes.")
 	d.Bullet("The internal file paths within the ZIP use forward slashes and are relative to the input directory root.")
 
-	d.H2("8.19  Handling Tags with Incorrect Value Representations")
+	d.H2("8.20  Handling Tags with Incorrect Value Representations")
 	d.P("Some DICOM files contain tags whose stored Value Representation (VR) does not match the DICOM standard. This can occur when equipment vendors write non-conformant files, or when files have been processed by third-party tools that do not validate VRs. By default, dicomtool will return an error when it tries to write such a file. The `fixvr:` parameter controls how these tags are handled.")
 	d.P("Attempt to re-encode each mismatched tag under its correct standard VR. If the re-encoding fails (for example, because the stored bytes cannot be interpreted as the expected type), the tag is removed and reported when `verbose:true` is set:")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out fixvr:correct set:PatientName=ANON")
@@ -985,7 +996,7 @@ func buildContent(d Formatter) {
 	d.Bullet("`fixvr:correct` is the safest option for most non-conformant files. Use `fixvr:passthrough` only when you need to preserve the original encoding exactly.")
 	d.Bullet("`fixvr` can be set in a processing profile via the `fixvr` key (see Section 6).")
 
-	d.H2("8.20  Parallel Processing")
+	d.H2("8.21  Parallel Processing")
 	d.P("By default, dicomtool processes files using all available CPU cores simultaneously. For large studies this can significantly reduce total run time compared to serial processing.")
 	d.P("Process files using 8 worker goroutines:")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out workers:8 set:PatientName=ANON")
@@ -999,13 +1010,13 @@ func buildContent(d Formatter) {
 	d.Bullet("With `verbose:true`, output lines from different workers may be interleaved. The final summary count and any errors are always accurate regardless of worker count.")
 	d.Bullet("Setting `workers:` higher than the number of files in the input tree has no effect -- the pool is capped at the job count automatically.")
 
-	d.H2("8.22  Resetting Configuration to Defaults")
+	d.H2("8.23  Resetting Configuration to Defaults")
 	d.P("To restore both `tags.json` and `profiles.json` to their factory defaults, overwriting any existing customisations:")
 	d.Code("dicomtool install")
 	d.P("Sample output:")
 	d.Code("written: C:\\Users\\username\\.dicomtool\\tags.json\nwritten: C:\\Users\\username\\.dicomtool\\profiles.json")
 
-	d.H2("8.23  Verbose Mode")
+	d.H2("8.24  Verbose Mode")
 	d.P("With `verbose:true`, each written file path, per-operation diagnostics, and a summary count are printed to stdout:")
 	d.Code("dicomtool modify input:C:\\study output:C:\\out set:PatientName=ANON maskrows:10 verbose:true")
 	d.P("Sample output:")

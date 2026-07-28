@@ -19,6 +19,7 @@ type Profile struct {
 	Keep             []string           `json:"keep,omitempty"`
 	DOB              string             `json:"dob,omitempty"`
 	UIDSuffix        string             `json:"uid,omitempty"`
+	ShiftDays        string             `json:"shiftdays,omitempty"`
 	RemapUIDs        bool               `json:"remapuids,omitempty"`
 	Priv             bool               `json:"noprivate,omitempty"`
 	KeepPrivate      bool               `json:"keepprivate,omitempty"`
@@ -110,6 +111,9 @@ func mergeProfiles(base, override Profile) Profile {
 	}
 	if override.UIDSuffix != "" {
 		result.UIDSuffix = override.UIDSuffix
+	}
+	if override.ShiftDays != "" {
+		result.ShiftDays = override.ShiftDays
 	}
 	if override.MaskRows > 0 {
 		result.MaskRows = override.MaskRows
@@ -240,6 +244,9 @@ func mergeProfile(p Profile) {
 	}
 	if p.UIDSuffix != "" && len(parsed["uid"]) == 0 {
 		parsed["uid"] = []string{p.UIDSuffix}
+	}
+	if p.ShiftDays != "" && len(parsed["shiftdays"]) == 0 {
+		parsed["shiftdays"] = []string{p.ShiftDays}
 	}
 
 	// Boolean: either source can enable.
