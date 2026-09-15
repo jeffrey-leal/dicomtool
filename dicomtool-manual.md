@@ -1,8 +1,8 @@
 # dicomtool
 
-**Usage Manual  v1.5.0**
+**Usage Manual  v2.0.0**
 
-July 28, 2026
+September 15, 2026
 
 A command-line utility for inspecting and modifying DICOM medical imaging files.
 
@@ -20,7 +20,7 @@ Key capabilities:
 - Remove specific tags by identifier
 - Remove all private (odd-group) tags from a file
 - Apply a positional mask to the Patient Date of Birth field
-- Append a numeric suffix to all UID fields, with automatic length management
+- Replace study, series, and instance UIDs with freshly generated, consistent values, renaming files and folders named after them
 - Skip Secondary Capture (screenshot) files during batch processing
 - Zero out a specified number of pixel rows from the top of each image frame
 - Correct or remove tags whose Value Representation does not match the DICOM standard
@@ -178,7 +178,6 @@ dicomtool modify input:<dir> output:<dir>
     [remove:<tag> ...]
     [dob:<mask>]
     [shiftdays:<n>]
-    [uid:<suffix>]
     [remapuids:true]
     [noprivate:true]
     [ignoretype:<types>]
@@ -203,8 +202,7 @@ dicomtool modify input:<dir> output:<dir>
 | `remove:<tag>` | Remove the specified tag entirely from every output file. `<tag>` may be a raw identifier or alias. Repeatable. |
 | `dob:<mask>` | Apply an 8-character positional mask to the Patient Date of Birth field (0010,0030). Digit characters in the mask overwrite the corresponding position; any other character preserves the original digit. Format: `YYYYMMDD`. |
 | `shiftdays:<n>` | Shift every DA (Date) and DT (DateTime) field in each file by `n` days. `n` may be negative, zero, or positive. For DT fields, only the leading date component moves; the time, fraction, and timezone portion is preserved unchanged. Patient Date of Birth (0010,0030) is never affected by `shiftdays:` — use `dob:` for that field instead. |
-| `uid:<suffix>` | Append `.<suffix>` to every UID field in each file. If the result would exceed 64 characters the last dot-delimited component is replaced instead of appended. `<suffix>` must contain digits only. Transfer Syntax UIDs are excluded. Mutually exclusive with `remapuids:true`. |
-| `remapuids:true` | Replace every study, series, and instance UID — and all references to them — with a freshly generated UID. Remapping is consistent across the entire run: the same source UID always maps to the same new UID in every file, so study/series/instance relationships and internal cross-references are preserved while linkage to the source is severed. SOP Class UIDs, Transfer Syntax UIDs, and the Implementation Class UID are left unchanged so files remain valid. Cannot be combined with `uid:`. |
+| `remapuids:true` | Replace every study, series, and instance UID — and all references to them — with a freshly generated UID. Remapping is consistent across the entire run: the same source UID always maps to the same new UID in every file, so study/series/instance relationships and internal cross-references are preserved while linkage to the source is severed. SOP Class UIDs, Transfer Syntax UIDs, and the Implementation Class UID are left unchanged so files remain valid. Output file and folder names that contain a remapped UID are rewritten with the new UID, so no original UID survives in the output paths, ZIP entry names, or DICOMDIR either. See Section 9.4. |
 | `noprivate:true` | Remove all private tags (those with an odd group number) before writing output. |
 | `ignoretype:<types>` | Skip files whose Image Type tag (0008,0008) contains any of the supplied comma-delimited values. Comparison is case-insensitive. Example: `ignoretype:SECONDARY,DERIVED`. |
 | `ignoremodality:<modalities>` | Skip files whose Modality tag (0008,0060) matches any of the supplied comma-delimited values. Comparison is case-insensitive. Example: `ignoremodality:SC,PR`. |
@@ -213,7 +211,7 @@ dicomtool modify input:<dir> output:<dir>
 | `workers:<n>` | Number of files to process simultaneously. Defaults to the number of logical CPU cores. Set to `1` to process files serially. Set to `0` to restore the default. |
 | `zip:true` | Package all output files into a single ZIP archive instead of writing them to a directory. The `output:` path is used as the ZIP file name; a `.zip` extension is appended automatically if not already present. Cannot be combined with `dicomdir:true`. |
 | `dicomdir:true` | After all files have been written, generate a DICOMDIR index file in the output directory. Cannot be combined with `zip:true`. |
-| `profile:<name>` | Apply a named processing profile from `profiles.json`. CLI parameters take precedence over profile values. See Section 6. |
+| `profile:<name>` | Apply a named processing profile from `profiles.json`. CLI parameters take precedence over profile values. Only one profile may be given. If the profile cannot be applied — it does not exist, its base profile is missing or circular, or `profiles.json` cannot be read — the command stops with an error before any file is processed, rather than running without it. See Section 6. |
 | `errorlog:txt|csv|json` | When one or more files fail, write the detailed per-file error messages to an `ERROR.<ext>` file in the root of the output directory instead of the console, in the chosen format. Without this parameter, the details print to the console. See the Error Handling subsection. |
 | `verbose:true` | Print a line for each file written, per-operation diagnostics, and a summary count on completion. |
 
@@ -230,10 +228,15 @@ Operations are applied in the following order within each file:
 - 6. Apply explicit `remove:` removals
 - 7. Shift DA/DT date fields (if `shiftdays:` supplied)
 - 8. Apply DOB mask (if `dob:` supplied)
-- 9. Apply UID suffix (if `uid:` supplied) or remap UIDs (if `remapuids:true`)
+- 9. Remap UIDs (if `remapuids:true`)
 - 10. Apply row mask (if `maskrows:` supplied)
 - 11. Apply all `set:` edits
-- 12. Write output file to directory, or to the ZIP archive if `zip:true`
+- 12. Write output file to directory, or to the ZIP archive if `zip:true` (under a path carrying the remapped UIDs, if `remapuids:true`)
+
+#### Removed: uid:<suffix>
+
+The `uid:<suffix>` parameter was removed in version 2.0.0. It appended a suffix to each UID, which left the original UID readable inside the result; `remapuids:true` replaces it. A run that still supplies `uid:` — on the command line, in the applied profile or a base profile it inherits from, or in a per-modality entry — is refused with an error before any output is written, rather than silently run without it. Delete the `uid` entry from the profile and use `remapuids:true` instead.
+
 
 #### Non-DICOM Files
 
@@ -379,8 +382,9 @@ Creates or completely replaces a profile. Parameters are the same key:value pair
 dicomtool profiles add <name>
     [base:<name>]
     [set:<tag>=<value> ...] [remove:<tag> ...]
-    [dob:<mask>] [uid:<suffix>] [remapuids:true]
+    [dob:<mask>] [remapuids:true]
     [noprivate:true] [maskrows:<n>]
+    [fixvr:correct|skip|passthrough]
     [dicomdir:true] [verbose:true]
 ```
 
@@ -551,8 +555,7 @@ Profiles are intended to capture a recurring workflow -- for example a de-identi
     "remove":         ["0008,0080", "0008,0081"],
     "keep":           [],
     "dob":            "YYYY0101",
-    "uid":            "9999",
-    "remapuids":      false,
+    "remapuids":      true,
     "noprivate":      true,
     "keepprivate":    false,
     "maskrows":       0,
@@ -579,7 +582,7 @@ When both a profile and command-line parameters are supplied, the following merg
 
 | Parameter type | Merge rule |
 |---|---|
-| `dob`, `uid` | CLI value wins. The profile value is ignored if the parameter was supplied on the command line. |
+| `dob` | CLI value wins. The profile value is ignored if the parameter was supplied on the command line. |
 | `maskrows` | CLI value wins. The profile value is ignored if `maskrows:` was supplied on the command line. |
 | `noprivate`, `dicomdir`, `verbose` | Either source can enable the flag. If either the CLI or the profile sets it to true, the flag is active. |
 | `set` | Per-tag precedence. For each tag in the profile's set list, if the same tag (after alias resolution) appears in the CLI set list, the CLI value is used and the profile value is discarded. Tags only in the profile are added. |
@@ -610,7 +613,7 @@ Merge rules for base inheritance:
 
 | Parameter type | Merge rule |
 |---|---|
-| `dob`, `uid` | Derived value wins if non-empty; otherwise base value is used. |
+| `dob` | Derived value wins if non-empty; otherwise base value is used. |
 | `maskrows` | Derived value wins if greater than zero; otherwise base value is used. |
 | `noprivate`, `dicomdir`, `verbose`, `keepprivate` | OR'd: either base or derived being true activates the flag. |
 | `set` | Per-tag precedence. Derived profile wins for any tag it defines; base contributes remaining tags. |
@@ -649,7 +652,7 @@ This stores `"0008,0050="` in the profile's set list, which causes the tag to be
 
 A profile can define different processing rules for individual DICOM modalities using the `per-modality` field. When a file is processed, its Modality tag (0008,0060) is checked against the map; if a matching entry exists, its settings are layered on top of the base profile settings for that file only.
 
-Per-modality overrides are additive: they do not replace the base profile, they extend it. The supported fields within a per-modality entry are: `set`, `remove`, `keep`, `keepprivate`, `dob`, `uid`, `fixvr`, `maskrows`, and `noprivate`. The `per-modality` and `base` fields are not supported inside a per-modality entry.
+Per-modality overrides are additive: they do not replace the base profile, they extend it. The supported fields within a per-modality entry are: `set`, `remove`, `keep`, `keepprivate`, `dob`, `fixvr`, `maskrows`, and `noprivate`. The `per-modality` and `base` fields are not supported inside a per-modality entry.
 
 Modality keys are matched case-insensitively. Tag aliases are resolved the same way as in top-level profile fields.
 
@@ -662,7 +665,7 @@ Merge rules for per-modality overrides (applied at runtime, per file):
 | `keep` | Tags listed are subtracted from the combined removal list. Use to restore a tag that the base profile removes for all other modalities. |
 | `keepprivate: true` | Suppresses `noprivate` for matched files, even when the base profile enables it. Lets private tags be preserved for a specific modality. |
 | `noprivate: true` | Forces private tag removal for matched files, even if the base profile does not enable it. |
-| `dob`, `uid`, `fixvr` | Replaces the base value when non-empty. |
+| `dob`, `fixvr` | Replaces the base value when non-empty. |
 | `maskrows` | Replaces the base value when greater than zero. |
 
 Example — remove Image Type for all modalities except MR; strip private tags everywhere except PT:
@@ -671,18 +674,18 @@ Example — remove Image Type for all modalities except MR; strip private tags e
 {
   "study-deident": {
     "set":       ["PatientName=ANON", "PatientID=ANON"],
-    "remove":    ["8,8"],
+    "remove":    ["0008,0008"],
     "noprivate": true,
     "fixvr":     "correct",
     "per-modality": {
       "MR": {
-        "keep": ["8,8"]
+        "keep": ["0008,0008"]
       },
       "PT": {
         "keepprivate": true
       },
       "CT": {
-        "remove": ["18,1400", "18,1401"],
+        "remove": ["0018,1400", "0018,1401"],
         "set":    ["Manufacturer="]
       }
     }
@@ -724,12 +727,21 @@ dicomtool modify input:C:\in output:C:\out config:D:\configs\custom-tags.json se
 
 ### 7.4  Error Handling
 
-Configuration errors always print to stderr regardless of the `verbose:` setting. If a configuration file exists but contains invalid JSON, an error is printed and the file is treated as empty. Processing continues with no aliases or profiles loaded.
+Configuration errors always print to stderr regardless of the `verbose:` setting. If `tags.json` exists but contains invalid JSON, an error is printed, the file is treated as empty, and processing continues with no aliases loaded:
 
 ```
 error: could not load tag aliases from "...": invalid character ...
-error: could not load profiles from "...": invalid character ...
-error: profile "name": profile "name" not found
+```
+
+A profile requested with `profile:` is different: if it cannot be applied, the command stops with an error and a non-zero exit status before any file is processed. Running on without the profile would silently skip every step it asks for — for a de-identification profile, writing output that is not de-identified. This covers a profile that does not exist, a missing or circular base profile, a `profiles.json` that cannot be read or parsed, an empty `profile:` value, and more than one `profile:` parameter:
+
+```
+Error: profile "name" not found in C:\Users\username\.dicomtool\profiles.json — run "dicomtool profiles list" to see the profiles defined there
+Error: profile "name": profile "base-name" not found
+Error: profile "name": circular base reference in profile "name"
+Error: profile "name": could not load C:\Users\username\.dicomtool\profiles.json: invalid character ...
+Error: profile: requires a profile name
+Error: only one profile: may be given, got 2 (first, second)
 ```
 
 
@@ -850,15 +862,23 @@ dicomtool modify input:C:\study output:C:\out
 For a DT field such as AcquisitionDateTime (0008,002A), only the leading `YYYYMMDD` date component is shifted; the time, fraction, and timezone portion is left exactly as it was.
 
 
-### 8.8  Appending a UID Suffix
+### 8.8  Remapping UIDs
 
-Append `.9999` to all UID fields. If a UID would exceed 64 characters, the last dot-delimited component is replaced instead of appended:
+Replace every study, series, and instance UID with a freshly generated one, consistently across the whole run:
 
 ```
-dicomtool modify input:C:\study output:C:\out uid:9999
+dicomtool modify input:C:\study output:C:\out remapuids:true
 ```
 
-Transfer Syntax UIDs (0002,0010) and Referenced Transfer Syntax UIDs (0004,1512) are excluded from modification as they describe the file encoding.
+Where the input tree is named after its UIDs, the output tree is named after the new ones, so the original UIDs do not survive in file or folder names:
+
+```
+C:\study\1.2.840.113619.2.55.3.1\1.2.840.113619.2.55.3.1.7\1.2.840.113619.2.55.3.1.7.12.dcm
+    becomes
+C:\out\2.25.1406...\2.25.2977...\2.25.8813....dcm
+```
+
+Transfer Syntax UIDs, SOP Class UIDs, and other standard UIDs are never remapped. See Section 9.4 for the full rules.
 
 
 ### 8.9  Skipping Files by Image Type or Modality
@@ -927,7 +947,7 @@ dicomtool modify input:C:\original output:C:\deidentified
     remove:0008,0081
     remove:0008,0090
     dob:YYYY0101
-    uid:9999
+    remapuids:true
     noprivate:true
     ignoremodality:SC
     ignoretype:SECONDARY
@@ -1072,7 +1092,7 @@ zipped: series1\CT.1.2.3.dcm
 
 - `zip:true` and `dicomdir:true` cannot be combined. Use one or the other.
 - Each ZIP entry carries the creation timestamp of the run, so extracted files have normal filesystem date attributes.
-- The internal file paths within the ZIP use forward slashes and are relative to the input directory root.
+- The internal file paths within the ZIP use forward slashes and are relative to the input directory root. With `remapuids:true`, UIDs in those paths are replaced with their new values (see Section 9.4).
 
 ### 8.20  Handling Tags with Incorrect Value Representations
 
@@ -1185,7 +1205,7 @@ Without `verbose:true` only errors and warnings are shown.
 
 ### 9.1  GGGG,EEEE Format
 
-DICOM tags are identified by a group number and an element number, both 16-bit hex values written as `GGGG,EEEE`. Leading zeros may be omitted but both components are required.
+DICOM tags are identified by a group number and an element number, both 16-bit hex values written as `GGGG,EEEE`: four hex digits each, with leading zeros, such as `0008,0080`. This is the form used throughout this manual and the built-in configuration files, and the recommended form for command lines and profiles. Both components are required; for compatibility with older profiles, dicomtool also accepts a component written with its leading zeros omitted.
 
 ```
 0010,0010   Patient Name
@@ -1230,20 +1250,27 @@ DICOM tags are identified by a group number and an element number, both 16-bit h
 Tags whose group number is odd (e.g. `0009,xxxx`, `0019,xxxx`) are private tags used by specific vendors or applications. They are not standardised. The `noprivate:true` flag removes all such tags from every output file.
 
 
-### 9.4  Transfer Syntax and UID Exclusions
+### 9.4  UID Remapping
 
-The following UID tags are excluded from the `uid:<suffix>` operation because they describe the encoding of the file itself and must remain valid, recognised values:
+`remapuids:true` replaces each UID with a freshly generated value. Remapping uses a single shared table for the entire run, so the same source UID always maps to the same new UID in every file. This preserves the study/series/instance hierarchy and every internal reference (for example `ReferencedSOPInstanceUID` values nested inside sequences continue to point at the correct, remapped instances) while severing any link back to the originating system. New UIDs use the ISO `2.25` UUID-derived root and are unique per run; re-running the command produces a different set of UIDs.
+
+UIDs beginning with the DICOM standard root `1.2.840.10008.` (SOP Class UIDs, Transfer Syntax UIDs, and other well-known values), together with the Implementation Class UID (0002,0012), are never remapped because they identify the object type, encoding, and creating software rather than the patient or study. The following UID tags are excluded by tag as well, whatever their value:
 
 | Tag | Name |
 |---|---|
 | 0002,0010 | Transfer Syntax UID |
+| 0002,0012 | Implementation Class UID |
 | 0004,1512 | Referenced Transfer Syntax UID in File |
 
-The `uid:<suffix>` operation appends a numeric suffix to UIDs, leaving the original value embedded in the result. This is suitable for lightweight namespacing but is reversible and does not break linkage to the source.
 
-For de-identification, `remapuids:true` instead replaces each UID with a freshly generated value. Remapping uses a single shared table for the entire run, so the same source UID always maps to the same new UID in every file. This preserves the study/series/instance hierarchy and every internal reference (for example `ReferencedSOPInstanceUID` values nested inside sequences continue to point at the correct, remapped instances) while severing any link back to the originating system. New UIDs use the ISO `2.25` UUID-derived root and are unique per run; re-running the command produces a different set of UIDs.
+#### Output File and Folder Names
 
-UIDs beginning with the DICOM standard root `1.2.840.10008.` (SOP Class UIDs, Transfer Syntax UIDs, and other well-known values), together with the Implementation Class UID (0002,0012), are never remapped because they identify the object type, encoding, and creating software rather than the patient or study. `remapuids:true` and `uid:<suffix>` cannot be used together.
+Source trees are often named after their UIDs — a folder per Study Instance UID, a subfolder per Series Instance UID, and a file per SOP Instance UID. Remapping the values inside each file would leave those names behind, so the output path of every file is rewritten as well: each UID in a file or folder name that the file itself carried, and that was remapped, is replaced with its new value. The rewritten path is used for the output directory, for ZIP entry names, and for the DICOMDIR's referenced file IDs.
+
+- A UID is matched only as whole dot-separated components, wherever it appears in a name: `1.2.3.dcm`, an extensionless `1.2.3`, `CT.1.2.3.dcm`, and `1.2.3.12.dcm` all have `1.2.3` replaced, while `1.2.34.dcm` is left alone. Where one UID prefixes another, the longer match wins.
+- Names that contain no remapped UID, such as `IM0001` or `Series 2`, are kept unchanged.
+- Only the UIDs a file itself holds are used for its path. Every file in a study folder carries that study's UID, so they all land in the same renamed folder. A file that lacks the UID its folder is named after — for example, a damaged file with no Study Instance UID — keeps that folder's original name.
+The `uid:<suffix>` parameter, which appended a suffix to every UID and left the original readable inside the result, was removed in version 2.0.0. A run or profile that still uses it is refused; see the modify command's "Removed: uid:<suffix>" note in Section 4.2.
 
 
 ### 9.5  Filtering by Modality and Image Type
@@ -1271,16 +1298,19 @@ Common use cases:
 | Tag not present in source file | For `set:` operations the tag is inserted; for `remove:` it is a no-op |
 | Relative `output:` path | Resolved relative to the `input:` directory |
 | `tags.json` has invalid JSON | Error printed to stderr; aliases treated as empty |
-| `profiles.json` has invalid JSON | Error printed to stderr; profiles treated as empty |
-| Named profile not found | Error printed to stderr; profile is not applied |
-| Base profile not found during inheritance resolution | Error printed to stderr; profile is not applied |
-| Circular base reference in profile chain | Error printed to stderr; profile is not applied |
+| `profiles.json` has invalid JSON and `profile:` is given | Error returned; the command stops before any file is processed |
+| Named profile not found | Error returned; the command stops before any file is processed |
+| Base profile not found during inheritance resolution | Error returned; the command stops before any file is processed |
+| Circular base reference in profile chain | Error returned; the command stops before any file is processed |
+| Empty `profile:` value, or more than one `profile:` | Error returned; the command stops before any file is processed |
 | `maskrows:` on compressed pixel data | Frame skipped; warning printed when `verbose:true` |
 | `inspect` file parse error | Error printed per file; remaining files continue to be processed |
 | `inspect` tag not found in file | `not found` printed for that tag; remaining tags continue |
 | `install` config directory does not exist | Directory created automatically before writing files |
 | `zip:true` with `dicomdir:true` | Error returned; the two options cannot be combined |
 | `zip:true` output path has no `.zip` extension | `.zip` is appended automatically |
+| `remapuids:true` and a file or folder name contains a remapped UID | The name is rewritten with the new UID in the output directory, ZIP entry, and DICOMDIR |
+| `uid:` supplied, or the profile (or a base or per-modality entry) carries `uid` | Error returned before any output is written; use `remapuids:true` instead |
 
 
 ---
@@ -1327,7 +1357,7 @@ Maps short alias names to DICOM tag identifiers. Any alias defined here can be u
 
 ### A.2  profiles.json
 
-Defines two built-in profiles. `base-deident` is a comprehensive de-identification baseline: it sets patient identity fields to anonymous values, masks the date of birth to year only, removes all private tags, corrects non-standard Value Representations, remaps every study/series/instance UID consistently, and removes over 130 tags commonly associated with identifying information.
+Defines the built-in profiles, reproduced below from the file shipped with this version, with tag lists shown several to a line. `base-deident` is a comprehensive de-identification baseline: it sets patient identity fields to anonymous values, masks the date of birth to year only, removes all private tags, corrects non-standard Value Representations, remaps every study/series/instance UID consistently, and removes 132 tags commonly associated with identifying information.
 
 ```
 {
@@ -1339,63 +1369,45 @@ Defines two built-in profiles. `base-deident` is a comprehensive de-identificati
       "ConfidentialityCode=Y"
     ],
     "remove": [
-      "8,80",   "8,81",   "8,90",   "8,92",   "8,94",
-      "8,1010", "8,1032", "8,1040", "8,1048", "8,1050",
-      "8,1060", "8,1070", "8,1080", "8,1100", "8,1110",
-      "10,21",  "10,22",  "10,24",
-      "10,1000","10,1001","10,1002","10,1005","10,1010",
-      "10,1040","10,1050","10,1060","10,1080","10,1090",
-      "10,2000","10,2110","10,2150","10,2152","10,2154",
-      "10,2155","10,2297","10,2298","10,2299",
-      "10,3020","10,4000","10,21B0","10,21F0",
-      "18,1400","18,1401",
-      "20,4000",
-      "28,300",
-      "32,1031","32,1032","32,1033",
-      "38,10",  "38,300", "38,400", "38,500", "38,4000",
-      "40,275", "40,1001","40,1002","40,1004","40,1005",
-      "40,2008","40,2009","40,2010","40,2011","40,2016",
-      "40,2017","40,2400","40,4006","40,4009","40,4010",
-      "40,4020","40,4021","40,A057","40,A060","40,A066",
-      "40,A067","40,A068","40,A070","40,A073","40,A075",
-      "40,A078","40,A123","40,A160","40,A730",
-      "50,10",
-      "70,1",   "70,2",   "70,3",   "70,4",   "70,5",
-      "70,6",   "70,8",   "70,9",   "70,10",  "70,11",
-      "70,12",  "70,13",  "70,14",  "70,80",  "70,81",
-      "70,82",  "70,83",  "70,84",  "70,207", "70,208",
-      "70,209", "70,303",
-      "72,2",   "72,4",   "72,6",   "72,8",   "72,A",
-      "72,C",   "72,E",   "72,10",
-      "400,100","400,105","400,110","400,115","400,120",
-      "400,402","400,403","400,404","400,561","400,562",
-      "400,563","400,564","400,565",
-      "2030,20",
-      "2110,10","2110,20","2110,30",
-      "2200,1", "2200,2"
+      "0008,0080", "0008,0081", "0008,0090", "0008,0092", "0008,0094",
+      "0008,1010", "0008,1032", "0008,1040", "0008,1048", "0008,1050",
+      "0008,1060", "0008,1070", "0008,1080", "0008,1100", "0008,1110",
+      "0010,0021", "0010,0022", "0010,0024", "0010,1000", "0010,1001",
+      "0010,1002", "0010,1005", "0010,1010", "0010,1040", "0010,1050",
+      "0010,1060", "0010,1080", "0010,1090", "0010,2000", "0010,2110",
+      "0010,2150", "0010,2152", "0010,2154", "0010,2155", "0010,2297",
+      "0010,2298", "0010,2299", "0010,3020", "0010,4000", "0010,21B0",
+      "0010,21F0",
+      "0018,1400", "0018,1401",
+      "0020,4000",
+      "0028,0300",
+      "0032,1031", "0032,1032", "0032,1033",
+      "0038,0010", "0038,0300", "0038,0400", "0038,0500", "0038,4000",
+      "0040,0275", "0040,1001", "0040,1002", "0040,1004", "0040,1005",
+      "0040,2008", "0040,2009", "0040,2010", "0040,2011", "0040,2016",
+      "0040,2017", "0040,2400", "0040,4006", "0040,4009", "0040,4010",
+      "0040,4020", "0040,4021", "0040,A057", "0040,A060", "0040,A066",
+      "0040,A067", "0040,A068", "0040,A070", "0040,A073", "0040,A075",
+      "0040,A078", "0040,A123", "0040,A160", "0040,A730",
+      "0050,0010",
+      "0070,0001", "0070,0002", "0070,0003", "0070,0004", "0070,0005",
+      "0070,0006", "0070,0008", "0070,0009", "0070,0010", "0070,0011",
+      "0070,0012", "0070,0013", "0070,0014", "0070,0080", "0070,0081",
+      "0070,0082", "0070,0083", "0070,0084", "0070,0207", "0070,0208",
+      "0070,0209", "0070,0303",
+      "0072,0002", "0072,0004", "0072,0006", "0072,0008", "0072,000A",
+      "0072,000C", "0072,000E", "0072,0010",
+      "0400,0100", "0400,0105", "0400,0110", "0400,0115", "0400,0120",
+      "0400,0402", "0400,0403", "0400,0404", "0400,0561", "0400,0562",
+      "0400,0563", "0400,0564", "0400,0565",
+      "2030,0020",
+      "2110,0010", "2110,0020", "2110,0030",
+      "2200,0001", "2200,0002"
     ],
-    "dob":       "YYYY0101",
+    "dob": "YYYY0101",
     "noprivate": true,
-    "fixvr":     "correct",
+    "fixvr": "correct",
     "remapuids": true
-  }
-}
-```
-
-`base-deident-keep-order` derives from `base-deident` and uses `keep` to restore the 29 group `0040` order-entry, requested-procedure, and Structured Report content tags (e.g. `RequestedProcedureID`, `VerifyingObserverName`, SR `PersonName`/`TextValue`) that the base profile removes. Use it for workflows where that content is needed and is not itself considered identifying.
-
-```
-{
-  "base-deident-keep-order": {
-    "base": "base-deident",
-    "keep": [
-      "40,275", "40,1001","40,1002","40,1004","40,1005",
-      "40,2008","40,2009","40,2010","40,2011","40,2016",
-      "40,2017","40,2400","40,4006","40,4009","40,4010",
-      "40,4020","40,4021","40,A057","40,A060","40,A066",
-      "40,A067","40,A068","40,A070","40,A073","40,A075",
-      "40,A078","40,A123","40,A160","40,A730"
-    ]
   }
 }
 ```
@@ -1406,29 +1418,22 @@ Defines two built-in profiles. `base-deident` is a comprehensive de-identificati
 
 ## Credits
 
-
-### Developer
-
-Jeffrey Leal
-
-Email: jeffrey.leal@gmail.com
-
-GitHub: https://github.com/jeffrey-leal
+dicomtool is a human–AI collaboration. Credit is given by role, reflecting how the work was actually divided.
 
 
-### AI Assistance
+### Architecture & Design
 
-This application was designed and developed with the assistance of Claude Sonnet 4.6 by Anthropic, accessed through Claude Code (https://claude.ai/code).
+Jeffrey Leal <jeffrey.leal@gmail.com>
 
-Contributions made with AI assistance include:
+https://github.com/jeffrey-leal
 
-- Application architecture and Go source code
-- Cobra CLI framework integration and command structure
-- DICOM tag inspection, modification, and VR correction logic
-- Profile system design and de-identification workflow
-- Tag alias and default configuration file content
-- Build scripts and cross-compilation configuration
-- User manual, changelog, and project documentation
+
+### Implementation
+
+Claude by Anthropic (https://anthropic.com)
+
+Application code and documentation
+
 
 ### DICOM Standard Reference
 

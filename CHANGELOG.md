@@ -1,5 +1,55 @@
 # Changelog
 
+## v2.0.0
+
+### Breaking Changes
+
+#### UID Suffix Option (`uid:<suffix>`) Removed
+- The `uid:<suffix>` parameter has been removed from `modify` and `profiles add`. It appended a suffix to every UID, which left the original UID readable inside the result; `remapuids:true` replaces it. This matches DicomQR, which retired the same option.
+- A run that still asks for a suffix is **refused** with an error naming `remapuids:true`, before any output is written, rather than silently run without it — ignoring the request would write original UIDs from a run whose author asked for them to be changed. This covers `uid:` on the command line, a `"uid"` entry in the applied profile or any base profile it inherits from (the error names the profile), and a `"uid"` entry in a per-modality override (the error names the modality).
+- A profile carrying a `"uid"` entry still loads and is still shown by `profiles show`, so the entry can be found; delete it from `~/.dicomtool/profiles.json` and add `"remapuids": true`. None of the built-in profiles use it.
+- This also removes a flaw where a per-modality `uid` override combined with `remapuids:true` bypassed the check that the two options could not be combined. Both were applied, and a study whose modalities differed in that override was split into two remapped Study Instance UIDs.
+
+#### Built-in `base-deident-keep-order` Profile Removed
+- The `base-deident-keep-order` profile added in v1.4.4 is no longer shipped; `base-deident` is now the only built-in profile. A copy already in `~/.dicomtool/profiles.json` keeps working, but `dicomtool install` overwrites that file and removes it. After that, a run naming `profile:base-deident-keep-order` stops with a "not found" error instead of running without it (see *An Unusable `profile:` Was Skipped* below).
+- To keep preserving the group `0040` order-entry, requested-procedure, and Structured Report content tags it restored, define your own profile in `~/.dicomtool/profiles.json` with `"base": "base-deident"` and a `"keep"` list of those tags — every group `0040` entry in `base-deident`'s removal list, `0040,0275` through `0040,A730`, 29 in all.
+
+### Changed
+
+#### `remapuids` Renames Files and Folders Named After UIDs
+- With `remapuids:true`, each output file's path is rewritten as well as its contents: every UID in a file or folder name that the file itself carried, and that was remapped, is replaced with its new value. Previously a source tree named after its UIDs — `<StudyInstanceUID>/<SeriesInstanceUID>/<SOPInstanceUID>.dcm`, a common PACS export layout — kept every original UID in the output paths of an otherwise de-identified run.
+- The rewritten path is used consistently for the output directory, ZIP entry names (`zip:true`), and the DICOMDIR's referenced file IDs (`dicomdir:true`).
+- UIDs are matched as whole dot-separated components anywhere in a name: `1.2.3.dcm`, an extensionless `1.2.3`, `CT.1.2.3.dcm`, and `1.2.3.12.dcm` are all renamed, while `1.2.34.dcm` is not. Where one UID prefixes another, the longer match wins. Names containing no remapped UID (e.g. `IM0001`) are unchanged.
+- Only a file's own UIDs are used for its path, so the result does not depend on the order worker threads process files: every file in a study folder names that folder identically. A file lacking the UID its folder is named after keeps that folder's original name.
+- Follows DicomQR, whose exports rename files after the remapped SOP Instance UID; dicomtool works on arbitrary input trees, so it renames UIDs where they appear rather than renaming every file.
+
+#### Four-Digit Tags in the Built-in Profile and the Manual
+- Every tag in the built-in `profiles.json` is now written in full `GGGG,EEEE` form with leading zeros — `0008,0080` rather than `8,80`, `0072,000A` rather than `72,A` — matching `tags.json` and the DICOM standard's notation. The 132 `base-deident` removals are otherwise unchanged, in value and in order. Every tag in the manual's examples is written the same way, and its tag format reference now gives the four-digit form as the standard.
+- Short forms are still accepted everywhere a tag is given, so existing profiles and command lines keep working. `~/.dicomtool/profiles.json` is not modified automatically; `dicomtool install` replaces it with the new defaults, overwriting any profiles you have added.
+
+#### Manual Appendix A.2 Generated From the Shipped `profiles.json`
+- The manual's copy of the default `profiles.json` was maintained by hand and could drift from the file built into dicomtool. The manual generator now reads the embedded file itself, so Appendix A.2 always shows exactly the defaults a release ships, including the number of tags `base-deident` removes. Generation stops with an error if the file does not parse or no longer has a `base-deident` profile.
+
+#### Credits Reworded
+- `CREDITS.md` and the manual's Credits section now give credit by role: Jeffrey Leal under *Architecture & Design* (name, email, GitHub) and Claude by Anthropic under *Implementation* (application code and documentation), replacing the former Developer and model-specific AI Assistance sections. The wording matches DicomQR's.
+
+### Fixed
+
+#### An Unusable `profile:` Was Skipped and the Run Carried On Without It
+- When the profile named by `profile:` could not be applied — it did not exist, its base profile was missing or circular, or `profiles.json` could not be read or parsed — dicomtool printed an error and then **ran anyway without the profile**, exiting with status 0. With other parameters on the command line, `modify ... profile:<name> set:PatientName=X` wrote output carrying only that one change and none of the profile's de-identification steps.
+- The command now stops with an error and a non-zero exit status before any file is processed, so nothing is written. The same applies to an empty `profile:` value (for example from an unset script variable), which was silently ignored, and to more than one `profile:` parameter, where every profile after the first was silently ignored.
+- The not-found error names the `profiles.json` it searched and suggests `dicomtool profiles list`. Scripts that relied on a run continuing past a missing profile will now see it fail.
+
+#### `profiles add` Silently Dropped `remapuids` and `fixvr`
+- `dicomtool profiles add <name> remapuids:true` saved the profile without `remapuids`, although the manual lists the parameter, so a de-identification profile created that way did not remap UIDs. `fixvr:` was dropped the same way. Both are now saved.
+- `fixvr:` is validated as it is by `modify` — `correct`, `skip`, or `passthrough`, case-insensitive — and a profile with any other value is rejected without being written.
+- Profiles created with an earlier version are not changed automatically: check them with `dicomtool profiles show <name>`, and re-add or edit any that should carry `"remapuids": true` or a `"fixvr"` value.
+
+#### A Derived Profile's `keep` Matched Base Removals Only by Exact Spelling
+- When a profile inherits from a base profile, its `keep` list cancels the base's removals. That match compared the tag references as text, so `"keep": ["40,275"]` did not cancel a base removal written `"0040,0275"`, and the tag the profile asked to preserve was removed anyway. `keep` entries now match by tag identity: short form, four-digit form, and a `tags.json` alias for the same tag are all equivalent. Without this, the four-digit built-in profiles above would have silently broken every existing derived profile that keeps a tag in short form. Per-modality `keep` lists already matched this way.
+
+---
+
 ## v1.5.0
 
 ### New Features

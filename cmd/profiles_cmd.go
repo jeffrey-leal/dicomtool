@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -66,13 +67,24 @@ var profilesAddCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 
+		if len(param("uid")) > 0 {
+			return errors.New("uid: is no longer supported: the UID suffix option was removed in dicomtool 2.0.0 — use remapuids:true instead")
+		}
+
 		p := Profile{
 			DOB:       paramOne("dob"),
-			UIDSuffix: paramOne("uid"),
 			ShiftDays: paramOne("shiftdays"),
+			RemapUIDs: boolParam("remapuids", false),
 			Priv:      boolParam("noprivate", false),
 			Dicomdir:  boolParam("dicomdir", false),
 			Verbose:   boolParam("verbose", false),
+			FixVR:     strings.ToLower(paramOne("fixvr")),
+		}
+
+		switch p.FixVR {
+		case "", "correct", "skip", "passthrough":
+		default:
+			return fmt.Errorf("fixvr %q: must be correct, skip, or passthrough", paramOne("fixvr"))
 		}
 
 		if s := p.ShiftDays; s != "" {

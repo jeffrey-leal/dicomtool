@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,7 +19,7 @@ type Profile struct {
 	Removes          []string           `json:"remove,omitempty"`
 	Keep             []string           `json:"keep,omitempty"`
 	DOB              string             `json:"dob,omitempty"`
-	UIDSuffix        string             `json:"uid,omitempty"`
+	UIDSuffix        string             `json:"uid,omitempty"` // removed in 2.0.0; kept so modify can refuse it — see refuseUIDSuffix
 	ShiftDays        string             `json:"shiftdays,omitempty"`
 	RemapUIDs        bool               `json:"remapuids,omitempty"`
 	Priv             bool               `json:"noprivate,omitempty"`
@@ -71,6 +72,39 @@ func SaveProfileConfig(path string, cfg ProfileConfig) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+// loadRequestedProfile returns the profile named by the profile: parameter
+// (names holds every value it was given), with its base chain resolved. Every
+// way the request can fail — no name, more than one, an unreadable or invalid
+// profiles.json, an unknown profile or base, a circular base chain — is an
+// error: a command that carried on without the profile would silently skip
+// everything the profile asked for, which for modify means writing output
+// without its de-identification steps.
+func loadRequestedProfile(names []string) (Profile, error) {
+	if len(names) > 1 {
+		return Profile{}, fmt.Errorf("only one profile: may be given, got %d (%s)", len(names), strings.Join(names, ", "))
+	}
+	name := names[0]
+	if strings.TrimSpace(name) == "" {
+		return Profile{}, errors.New("profile: requires a profile name")
+	}
+	path, err := DefaultProfilePath()
+	if err != nil {
+		return Profile{}, fmt.Errorf("profile %q: could not determine the profile file path: %w", name, err)
+	}
+	cfg, err := LoadProfileConfig(path)
+	if err != nil {
+		return Profile{}, fmt.Errorf("profile %q: could not load %s: %w", name, path, err)
+	}
+	if _, ok := cfg[name]; !ok {
+		return Profile{}, fmt.Errorf("profile %q not found in %s — run \"dicomtool profiles list\" to see the profiles defined there", name, path)
+	}
+	p, err := resolveProfile(name, cfg)
+	if err != nil {
+		return Profile{}, fmt.Errorf("profile %q: %w", name, err)
+	}
+	return p, nil
 }
 
 // resolveProfile returns the effective Profile for name after fully resolving its
@@ -168,15 +202,16 @@ func mergeProfiles(base, override Profile) Profile {
 	result.KeepPrivate = base.KeepPrivate || override.KeepPrivate
 
 	// Apply override.Keep to filter result.Removes: a child profile can restore
-	// tags that a parent profile removes.
+	// tags that a parent profile removes. Entries match by tag identity, so a
+	// keep of "40,275" still cancels a base removal spelled "0040,0275".
 	if len(override.Keep) > 0 {
 		keepSet := make(map[string]bool, len(override.Keep))
 		for _, k := range override.Keep {
-			keepSet[strings.ToLower(strings.TrimSpace(k))] = true
+			keepSet[tagRefKey(k)] = true
 		}
 		filtered := make([]string, 0, len(result.Removes))
 		for _, r := range result.Removes {
-			if !keepSet[strings.ToLower(strings.TrimSpace(r))] {
+			if !keepSet[tagRefKey(r)] {
 				filtered = append(filtered, r)
 			}
 		}
@@ -226,11 +261,23 @@ func mergeProfiles(base, override Profile) Profile {
 	return result
 }
 
+// tagRefKey returns the identity two profile tag references are compared by:
+// the parsed tag when the reference (after alias resolution) parses, so "8,80",
+// "0008,0080" and an alias for that tag all match, and otherwise the
+// lower-cased reference itself.
+func tagRefKey(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if t, err := parseTagString(Opts.TagAliases.Resolve(ref)); err == nil {
+		return t.String()
+	}
+	return strings.ToLower(ref)
+}
+
 // mergeProfile applies the profile's values into the shared parsed map, honouring
 // CLI-first precedence:
 //
-//   - Scalar params (dob, uid): profile value is used only when the CLI did not
-//     supply one.
+//   - Scalar params (dob, shiftdays): profile value is used only when the CLI
+//     did not supply one.
 //   - Boolean params (priv, dicomdir, verbose): either source can enable the flag.
 //   - set: per-tag precedence — for each profile set entry, the tag component
 //     (before '=') is compared against tags already present in the CLI set list;
@@ -242,9 +289,9 @@ func mergeProfile(p Profile) {
 	if p.DOB != "" && len(parsed["dob"]) == 0 {
 		parsed["dob"] = []string{p.DOB}
 	}
-	if p.UIDSuffix != "" && len(parsed["uid"]) == 0 {
-		parsed["uid"] = []string{p.UIDSuffix}
-	}
+	// uid (the UID suffix, removed in 2.0.0) is recorded rather than merged, so
+	// modify can refuse the profile by name — see refuseUIDSuffix.
+	Opts.ProfileUID = p.UIDSuffix
 	if p.ShiftDays != "" && len(parsed["shiftdays"]) == 0 {
 		parsed["shiftdays"] = []string{p.ShiftDays}
 	}

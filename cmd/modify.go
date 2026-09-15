@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,14 +43,13 @@ Parameters:
                             fields, only the date portion moves; the time
                             component is preserved. Patient Birth Date is
                             never affected by shiftdays — use dob: for that.
-  uid:<suffix>              Append .<suffix> to every UID field. Suffix must be
-                            digits only [1-9]. Transfer Syntax UIDs are excluded.
-                            Mutually exclusive with remapuids.
   remapuids:true            Replace every study/series/instance UID (and all
                             references to them) with a fresh UID, consistently
                             across the whole run so relationships are preserved.
-                            SOP Class and Transfer Syntax UIDs are kept. Cannot
-                            be combined with uid.
+                            SOP Class and Transfer Syntax UIDs are kept. A file
+                            or folder name containing a remapped UID is renamed
+                            to carry the new UID, so no original UID survives
+                            in the output paths either.
   noprivate:true            Remove all private (odd-group) tags.
   ignoretype:<values>       Skip files whose Image Type (0008,0008) contains any
                             of the comma-delimited values. Case-insensitive.
@@ -66,6 +66,9 @@ Parameters:
   zip:true                  Package output into a ZIP archive instead of a directory.
   dicomdir:true             Generate a DICOMDIR index in the output directory.
   profile:<name>            Apply a named profile from ~/.dicomtool/profiles.json.
+                            Only one may be given. If it cannot be applied (not
+                            found, missing or circular base, unreadable file),
+                            the run stops before any file is processed.
   errorlog:txt|csv|json     On failure, write detailed per-file errors to an
                             ERROR.<ext> file in the output root instead of the
                             console. Without it, details print to the console.
@@ -77,8 +80,11 @@ non-zero when any file failed.
 
 Processing order per file:
   1. Parse   2. fixvr   3. ignoretype  4. ignoremodality  5. noprivate
-  6. remove  7. shiftdays  8. dob      9. uid/remapuids   10. maskrows
+  6. remove  7. shiftdays  8. dob      9. remapuids   10. maskrows
   11. set    12. write
+
+The uid:<suffix> parameter was removed in 2.0.0; use remapuids:true instead.
+A run that still supplies uid:, or a profile carrying a "uid" entry, is refused.
 
 Examples:
   dicomtool modify input:C:\in output:C:\out set:PatientName=ANON noprivate:true
@@ -124,7 +130,9 @@ func runModify() error {
 	rawSets := param("set")
 	rawRemoves := param("remove")
 	dobMask := paramOne("dob")
-	uidSuffix := paramOne("uid")
+	if err := refuseUIDSuffix(); err != nil {
+		return err
+	}
 	fixvrMode := strings.ToLower(paramOne("fixvr"))
 	if fixvrMode != "" && fixvrMode != "correct" && fixvrMode != "skip" && fixvrMode != "passthrough" {
 		return fmt.Errorf("fixvr %q: must be correct, skip, or passthrough", fixvrMode)
@@ -163,31 +171,20 @@ func runModify() error {
 	}
 
 	remapUIDs := boolParam("remapuids", false)
-	if remapUIDs && uidSuffix != "" {
-		return errors.New("remapuids:true and uid: cannot be combined")
-	}
 
 	// Require at least one actionable parameter. Profile values are already
 	// merged into parsed by this point, so this check covers profile-only runs.
 	hasAction := len(rawSets) > 0 || len(rawRemoves) > 0 ||
-		dobMask != "" || uidSuffix != "" || maskRows > 0 ||
+		dobMask != "" || maskRows > 0 ||
 		boolParam("noprivate", false) || fixvrMode != "" ||
 		paramOne("ignoretype") != "" || paramOne("ignoremodality") != "" ||
 		len(Opts.PerModality) > 0 || remapUIDs || shiftDaysStr != ""
 	if !hasAction {
-		return errors.New("at least one actionable parameter is required (set, remove, dob, uid, maskrows, noprivate, ignoretype, ignoremodality, remapuids, shiftdays) — or specify a profile that contains one")
+		return errors.New("at least one actionable parameter is required (set, remove, dob, maskrows, noprivate, ignoretype, ignoremodality, remapuids, shiftdays) — or specify a profile that contains one")
 	}
 
 	if dobMask != "" && len(dobMask) != 8 {
 		return fmt.Errorf("dob mask must be exactly 8 characters (YYYYMMDD format), got %d", len(dobMask))
-	}
-
-	if uidSuffix != "" {
-		for _, c := range uidSuffix {
-			if c < '1' || c > '9' {
-				return fmt.Errorf("uid suffix %q must contain digits in the set [1..9] only", uidSuffix)
-			}
-		}
 	}
 
 	removals := make([]tag.Tag, 0, len(rawRemoves))
@@ -345,7 +342,7 @@ func runModify() error {
 				if srcFile == nil {
 					continue
 				}
-				skipped, ds, perr := processFile(srcFile, edits, removals, dobMask, uidSuffix, shiftDaysStr, removePrivate, maskRows, ignoreTypes, ignoreModalities, fixvrMode, perModOverrides, uidRemap)
+				skipped, ds, remapped, perr := processFile(srcFile, edits, removals, dobMask, shiftDaysStr, removePrivate, maskRows, ignoreTypes, ignoreModalities, fixvrMode, perModOverrides, uidRemap)
 				if perr != nil {
 					recordFailure(job.path, fmt.Errorf("process: %w", perr))
 					continue
@@ -356,10 +353,14 @@ func runModify() error {
 					}
 					continue
 				}
+				// The output path carries the remapped UIDs too, so a source tree
+				// named after its UIDs does not leak them through file and folder
+				// names. Every output (directory, ZIP entry, DICOMDIR) uses it.
+				outRel := remapRelPath(job.rel, remapped)
 				if zipOutput {
 					zipMu.Lock()
 					hdr := &zip.FileHeader{
-						Name:     filepath.ToSlash(job.rel),
+						Name:     filepath.ToSlash(outRel),
 						Method:   zip.Deflate,
 						Modified: time.Now(),
 					}
@@ -376,10 +377,10 @@ func runModify() error {
 						for _, e := range edits {
 							fmt.Printf("  set %s = %q\n", e.tag, e.value)
 						}
-						fmt.Printf("zipped: %s\n", job.rel)
+						fmt.Printf("zipped: %s\n", outRel)
 					}
 				} else {
-					outFile := filepath.Join(Opts.Output, job.rel)
+					outFile := filepath.Join(Opts.Output, outRel)
 					if merr := os.MkdirAll(filepath.Dir(outFile), 0o755); merr != nil {
 						recordFailure(job.path, fmt.Errorf("create output dir: %w", merr))
 						continue
@@ -406,7 +407,7 @@ func runModify() error {
 						continue
 					}
 					if dicomdirEnabled {
-						src := extractDicomdirSource(&ds, job.rel)
+						src := extractDicomdirSource(&ds, outRel)
 						ddMu.Lock()
 						ddSources = append(ddSources, src)
 						ddMu.Unlock()
@@ -552,7 +553,6 @@ type modalityOverride struct {
 	removals      []tag.Tag
 	keep          []tag.Tag
 	dobMask       string
-	uidSuffix     string
 	shiftDays     string
 	fixvrMode     string
 	maskRows      int
@@ -595,7 +595,6 @@ func buildModalityOverrides(perMod map[string]Profile) map[string]modalityOverri
 			ov.keep = append(ov.keep, t)
 		}
 		ov.dobMask = p.DOB
-		ov.uidSuffix = p.UIDSuffix
 		ov.shiftDays = p.ShiftDays
 		ov.fixvrMode = p.FixVR
 		ov.maskRows = p.MaskRows
@@ -643,20 +642,22 @@ func filterKeep(removals []tag.Tag, keep []tag.Tag) []tag.Tag {
 }
 
 // processFile parses src, optionally skips secondary-capture files, and applies
-// all edits. It returns (true, zero, nil) when the file should be skipped, or
-// (false, transformed dataset, nil) on success. The caller is responsible for
-// writing the returned dataset to its destination.
-func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uidSuffix, shiftDaysStr string, removePrivate bool, maskRows int, ignoreTypes, ignoreModalities []string, fixvrMode string, perModOverrides map[string]modalityOverride, uidRemap *uidRemapper) (skipped bool, ds dicom.Dataset, err error) {
+// all edits. It returns (true, zero, nil, nil) when the file should be skipped,
+// or (false, transformed dataset, remapped, nil) on success, where remapped maps
+// each original UID this file carried to its replacement (nil unless uidRemap
+// is set). The caller is responsible for writing the returned dataset to its
+// destination.
+func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, shiftDaysStr string, removePrivate bool, maskRows int, ignoreTypes, ignoreModalities []string, fixvrMode string, perModOverrides map[string]modalityOverride, uidRemap *uidRemapper) (skipped bool, ds dicom.Dataset, remapped map[string]string, err error) {
 	info, err := src.Stat()
 	if err != nil {
 		src.Close()
-		return false, ds, fmt.Errorf("stat: %w", err)
+		return false, ds, nil, fmt.Errorf("stat: %w", err)
 	}
 	br := bufio.NewReaderSize(src, 1<<20)
 	ds, err = dicom.Parse(br, info.Size(), nil)
 	src.Close()
 	if err != nil {
-		return false, ds, fmt.Errorf("parse: %w", err)
+		return false, ds, nil, fmt.Errorf("parse: %w", err)
 	}
 
 	if len(ignoreTypes) > 0 {
@@ -664,7 +665,7 @@ func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uid
 			for _, component := range elemStringComponents(elem) {
 				for _, ignore := range ignoreTypes {
 					if strings.EqualFold(component, strings.TrimSpace(ignore)) {
-						return true, ds, nil
+						return true, ds, nil, nil
 					}
 				}
 			}
@@ -676,7 +677,7 @@ func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uid
 			for _, component := range elemStringComponents(elem) {
 				for _, ignore := range ignoreModalities {
 					if strings.EqualFold(component, strings.TrimSpace(ignore)) {
-						return true, ds, nil
+						return true, ds, nil, nil
 					}
 				}
 			}
@@ -695,9 +696,6 @@ func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uid
 					removals = filterKeep(removals, ov.keep)
 					if ov.dobMask != "" {
 						dobMask = ov.dobMask
-					}
-					if ov.uidSuffix != "" {
-						uidSuffix = ov.uidSuffix
 					}
 					if ov.shiftDays != "" {
 						shiftDaysStr = ov.shiftDays
@@ -738,23 +736,20 @@ func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uid
 	if shiftDaysStr != "" {
 		n, err := strconv.Atoi(shiftDaysStr) // re-validated defensively — a profile could carry a bad value
 		if err != nil {
-			return false, ds, fmt.Errorf("shiftdays %q must be an integer", shiftDaysStr)
+			return false, ds, nil, fmt.Errorf("shiftdays %q must be an integer", shiftDaysStr)
 		}
 		applyDateShift(ds.Elements, n)
 	}
 
 	if dobMask != "" {
 		if err := applyDOBMask(&ds, dobMask); err != nil {
-			return false, ds, err
+			return false, ds, nil, err
 		}
 	}
 
-	if uidSuffix != "" {
-		applyUIDSuffix(&ds, uidSuffix)
-	}
-
 	if uidRemap != nil {
-		applyUIDRemap(ds.Elements, uidRemap)
+		remapped = make(map[string]string)
+		applyUIDRemap(ds.Elements, uidRemap, remapped)
 	}
 
 	if maskRows > 0 {
@@ -764,7 +759,7 @@ func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uid
 	for _, e := range edits {
 		newElem, err := buildElement(&ds, e)
 		if err != nil {
-			return false, ds, err
+			return false, ds, nil, err
 		}
 		// Replace every occurrence at any nesting depth; append at the top level
 		// only when the tag is absent throughout the dataset.
@@ -773,7 +768,7 @@ func processFile(src *os.File, edits []tagEdit, removals []tag.Tag, dobMask, uid
 		}
 	}
 
-	return false, ds, nil
+	return false, ds, remapped, nil
 }
 
 // applyEdit replaces or inserts an element in ds for the given tagEdit.
@@ -830,49 +825,32 @@ func buildElement(ds *dicom.Dataset, e tagEdit) (*dicom.Element, error) {
 	}
 }
 
-// maxUIDLength is the maximum number of characters permitted in a DICOM UID
-// (DICOM PS3.5 §9.1).
-const maxUIDLength = 64
-
-// applyUIDSuffix iterates every element in ds that carries a UI (UID) value
-// and appends ".<suffix>" to it. If the resulting string would exceed
-// maxUIDLength, the last dot-delimited component of the original UID is
-// replaced with suffix instead.
-func applyUIDSuffix(ds *dicom.Dataset, suffix string) {
-	for _, elem := range ds.Elements {
-		if elem.RawValueRepresentation != "UI" {
-			continue
-		}
-		// Transfer Syntax UIDs must not be modified — they describe the encoding
-		// of the file itself and must remain valid, recognised UIDs.
-		if elem.Tag == tag.TransferSyntaxUID || elem.Tag == tag.ReferencedTransferSyntaxUIDInFile {
-			continue
-		}
-		vals, ok := elem.Value.GetValue().([]string)
-		if !ok {
-			continue
-		}
-		modified := make([]string, len(vals))
-		for i, uid := range vals {
-			candidate := uid + "." + suffix
-			if len(candidate) <= maxUIDLength {
-				modified[i] = candidate
-			} else {
-				// Replace the last component.
-				if dot := strings.LastIndex(uid, "."); dot >= 0 {
-					modified[i] = uid[:dot+1] + suffix
-				} else {
-					// No dot at all — just use the suffix directly.
-					modified[i] = suffix
-				}
-			}
-		}
-		v, err := dicom.NewValue(modified)
-		if err != nil {
-			continue
-		}
-		elem.Value = v
+// refuseUIDSuffix rejects a run that still asks for the UID suffix option,
+// removed in 2.0.0 because the suffixed UID left the original readable inside
+// it; remapuids replaced it. The request may come from the command line, the
+// applied profile (directly or through its base), or one of the profile's
+// per-modality entries. It is refused rather than ignored: silently dropping it
+// would write original UIDs from a run whose author asked for them changed.
+func refuseUIDSuffix() error {
+	const removed = "the UID suffix option was removed in dicomtool 2.0.0"
+	if len(param("uid")) > 0 {
+		return fmt.Errorf("uid: is no longer supported: %s — use remapuids:true instead", removed)
 	}
+	profileName := paramOne("profile")
+	if Opts.ProfileUID != "" {
+		return fmt.Errorf("profile %q carries a \"uid\" entry, directly or via its base profile: %s — delete the entry from profiles.json and use \"remapuids\": true instead", profileName, removed)
+	}
+	mods := make([]string, 0, len(Opts.PerModality))
+	for mod := range Opts.PerModality {
+		mods = append(mods, mod)
+	}
+	sort.Strings(mods)
+	for _, mod := range mods {
+		if Opts.PerModality[mod].UIDSuffix != "" {
+			return fmt.Errorf("profile %q per-modality entry %s carries a \"uid\" entry: %s — delete the entry from profiles.json and use \"remapuids\": true instead", profileName, mod, removed)
+		}
+	}
+	return nil
 }
 
 // dicomOrgRoot prefixes all DICOM standard-defined UIDs (SOP Classes, Transfer
@@ -906,13 +884,15 @@ func (r *uidRemapper) mapUID(original string) string {
 // with its consistent remapped UID, leaving standard and structural UIDs
 // untouched. Recursing into sequences keeps nested references (e.g.
 // ReferencedSOPInstanceUID) consistent with the instances they point to.
-func applyUIDRemap(elements []*dicom.Element, r *uidRemapper) {
+// Each replacement made is recorded in applied (original → new) when applied
+// is non-nil, so the caller can rename output paths built from those UIDs.
+func applyUIDRemap(elements []*dicom.Element, r *uidRemapper, applied map[string]string) {
 	for _, elem := range elements {
 		if elem.Value != nil && elem.Value.ValueType() == dicom.Sequences {
 			if seqItems, ok := elem.Value.GetValue().([]*dicom.SequenceItemValue); ok {
 				for _, item := range seqItems {
 					if itemElems, ok2 := item.GetValue().([]*dicom.Element); ok2 {
-						applyUIDRemap(itemElems, r)
+						applyUIDRemap(itemElems, r, applied)
 					}
 				}
 			}
@@ -945,10 +925,83 @@ func applyUIDRemap(elements []*dicom.Element, r *uidRemapper) {
 		if changed {
 			if v, err := dicom.NewValue(out); err == nil {
 				elem.Value = v
+				if applied != nil {
+					for i, uid := range vals {
+						if out[i] != uid {
+							applied[uid] = out[i]
+						}
+					}
+				}
 			}
 		}
 	}
 }
+
+// remapRelPath returns rel with every UID in its file and folder names that
+// this file's remap replaced (remapped: original → new) swapped for its
+// replacement, so a source tree named after its UIDs — "<SOPInstanceUID>.dcm",
+// "<StudyInstanceUID>/<SeriesInstanceUID>/…", "CT.<uid>.dcm" — does not carry
+// them into the output. Only UIDs the file itself held are substituted, so the
+// result depends on nothing another worker has seen: every file of a study
+// folder names that folder identically. Names containing no remapped UID are
+// returned unchanged.
+func remapRelPath(rel string, remapped map[string]string) string {
+	if len(remapped) == 0 {
+		return rel
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	for i, part := range parts {
+		parts[i] = remapNameUIDs(part, remapped)
+	}
+	return filepath.FromSlash(strings.Join(parts, "/"))
+}
+
+// remapNameUIDs substitutes remapped UIDs within one path component. A UID can
+// only occur inside a run of digits and dots, so each maximal run is handed to
+// remapUIDRun and everything around it is kept verbatim.
+func remapNameUIDs(name string, remapped map[string]string) string {
+	var b strings.Builder
+	for i := 0; i < len(name); {
+		if !isUIDChar(name[i]) {
+			b.WriteByte(name[i])
+			i++
+			continue
+		}
+		j := i
+		for j < len(name) && isUIDChar(name[j]) {
+			j++
+		}
+		b.WriteString(remapUIDRun(name[i:j], remapped))
+		i = j
+	}
+	return b.String()
+}
+
+// remapUIDRun replaces UIDs within run, a string of digits and dots. Matching
+// is aligned to dot-separated components, so "1.2.3" is found in "1.2.3.dcm"
+// and "7.1.2.3" but never inside "1.2.34", and the longest match wins at each
+// position, so a study UID that prefixes an instance UID cannot shadow it.
+func remapUIDRun(run string, remapped map[string]string) string {
+	comps := strings.Split(run, ".")
+	out := make([]string, 0, len(comps))
+	for i := 0; i < len(comps); {
+		j := len(comps)
+		for ; j > i; j-- {
+			if v, ok := remapped[strings.Join(comps[i:j], ".")]; ok {
+				out = append(out, v)
+				break
+			}
+		}
+		if j == i {
+			out = append(out, comps[i])
+			j = i + 1
+		}
+		i = j
+	}
+	return strings.Join(out, ".")
+}
+
+func isUIDChar(c byte) bool { return c == '.' || (c >= '0' && c <= '9') }
 
 // applyDateShift shifts every DA and DT element's leading YYYYMMDD date
 // component by shiftDays (positive, negative, or zero) at any nesting depth.

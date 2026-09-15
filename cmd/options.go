@@ -17,6 +17,10 @@ type Options struct {
 	ConfigFile  string
 	TagAliases  TagConfig
 	PerModality map[string]Profile
+	// ProfileUID is the applied profile's retired "uid" (UID suffix) entry, if
+	// any, kept apart from the command-line uid: so modify can refuse the run
+	// naming the profile rather than a parameter the user never typed.
+	ProfileUID string
 }
 
 // Opts is the single shared instance populated during argument parsing.
@@ -74,23 +78,15 @@ func parseArgs(args []string) error {
 	}
 
 	// Resolve profile: merge profile values into parsed, with CLI values
-	// taking precedence over profile values.
-	if profileName := paramOne("profile"); profileName != "" {
-		profPath, err := DefaultProfilePath()
+	// taking precedence over profile values. A requested profile that cannot be
+	// applied stops the command before it does anything — see
+	// loadRequestedProfile.
+	if names := param("profile"); len(names) > 0 {
+		p, err := loadRequestedProfile(names)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: could not determine profile file path: %v\n", err)
-		} else {
-			cfg, err := LoadProfileConfig(profPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: could not load profiles from %q: %v\n", profPath, err)
-			} else {
-				if p, err := resolveProfile(profileName, cfg); err == nil {
-					mergeProfile(p)
-				} else {
-					fmt.Fprintf(os.Stderr, "error: profile %q: %v\n", profileName, err)
-				}
-			}
+			return err
 		}
+		mergeProfile(p)
 	}
 
 	return nil

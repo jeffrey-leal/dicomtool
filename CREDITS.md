@@ -1,16 +1,19 @@
 # Credits
 
-## Developer
+## Attribution
 
-**Jeffrey Leal**
-Email: jeffrey.leal@gmail.com
-GitHub: https://github.com/jeffrey-leal
+dicomtool is a human–AI collaboration. Credit is given by role, reflecting
+how the work was actually divided.
 
-## AI Assistance
+### Architecture & Design
 
-This application was designed and developed with the assistance of
-**Claude** by [Anthropic](https://www.anthropic.com), accessed through
-[Claude Code](https://claude.ai/code).
+Jeffrey Leal <jeffrey.leal@gmail.com>
+https://github.com/jeffrey-leal
+
+### Implementation
+
+Claude by Anthropic (https://anthropic.com)
+Application code and documentation
 
 ## DICOM Standard Reference
 

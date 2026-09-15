@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -282,7 +285,8 @@ func TestApplyUIDRemap_ConsistentAndReferentiallyIntact(t *testing.T) {
 	}
 
 	r := newUIDRemapper()
-	applyUIDRemap(elems, r)
+	applied := make(map[string]string)
+	applyUIDRemap(elems, r, applied)
 
 	// Standard / structural UIDs unchanged.
 	if got := strValue(t, findTag(elems, tag.TransferSyntaxUID)); got != "1.2.840.10008.1.2.1" {
@@ -312,6 +316,13 @@ func TestApplyUIDRemap_ConsistentAndReferentiallyIntact(t *testing.T) {
 	// Nested standard SOP class still preserved.
 	if got := strValue(t, findTag(items[0], tagSOPClass)); got != "1.2.840.10008.5.1.4.1.1.2" {
 		t.Fatalf("nested SOPClassUID was remapped: %q", got)
+	}
+
+	// Exactly the replacements made are recorded — they drive output path
+	// renaming, so a kept standard or structural UID must not appear.
+	newStudy := strValue(t, findTag(elems, tagStudyUID))
+	if len(applied) != 2 || applied[instUID] != newInst || applied["1.3.6.1.4.999.7"] != newStudy {
+		t.Fatalf("applied = %v, want only the study and instance UIDs mapped to their replacements", applied)
 	}
 }
 
@@ -397,6 +408,238 @@ func TestUIDRemapper_ConcurrentMapUID(t *testing.T) {
 	// All callers must observe the single cached value for a given input.
 	if a, b := r.mapUID("1.2.3.4"), r.mapUID("1.2.3.4"); a != b {
 		t.Fatalf("inconsistent mapping after concurrent access: %q vs %q", a, b)
+	}
+}
+
+// --- remapRelPath -------------------------------------------------------------
+
+func TestRemapRelPath(t *testing.T) {
+	remapped := map[string]string{
+		"1.2.3":   "2.25.100", // study
+		"1.2.3.4": "2.25.200", // instance, prefixed by the study UID
+		"9.8.7":   "2.25.300", // series
+	}
+	tests := []struct{ name, rel, want string }{
+		{"file named after its UID", "1.2.3.4.dcm", "2.25.200.dcm"},
+		{"extensionless UID file", "1.2.3.4", "2.25.200"},
+		{"UID embedded in a longer name", "CT.1.2.3.4.dcm", "CT.2.25.200.dcm"},
+		{"UID followed by an instance number", "9.8.7.12.dcm", "2.25.300.12.dcm"},
+		{"folders named after UIDs", filepath.Join("1.2.3", "9.8.7", "IM0001"), filepath.Join("2.25.100", "2.25.300", "IM0001")},
+		{"partial component is not a match", "1.2.34.dcm", "1.2.34.dcm"},
+		{"name without a UID", filepath.Join("study", "IM0001.dcm"), filepath.Join("study", "IM0001.dcm")},
+		{"UID the file did not carry", "5.5.5.dcm", "5.5.5.dcm"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := remapRelPath(tt.rel, remapped); got != tt.want {
+				t.Fatalf("remapRelPath(%q) = %q, want %q", tt.rel, got, tt.want)
+			}
+		})
+	}
+	if got := remapRelPath("1.2.3.4.dcm", nil); got != "1.2.3.4.dcm" {
+		t.Fatalf("remapRelPath with no remap = %q, want the path unchanged", got)
+	}
+}
+
+// --- runModify end to end -----------------------------------------------------
+
+// writeTestDICOM writes a minimal Explicit VR Little Endian CT file at path.
+func writeTestDICOM(t *testing.T, path, studyUID, seriesUID, sopUID string) {
+	t.Helper()
+	const ctImageStorage = "1.2.840.10008.5.1.4.1.1.2"
+	ds := dicom.Dataset{Elements: []*dicom.Element{
+		uidElem(tag.MediaStorageSOPClassUID, ctImageStorage),
+		uidElem(tag.MediaStorageSOPInstanceUID, sopUID),
+		uidElem(tag.TransferSyntaxUID, "1.2.840.10008.1.2.1"),
+		uidElem(tagSOPClass, ctImageStorage),
+		uidElem(tagSOPInstance, sopUID),
+		strElem(t, tag.Modality, "CT"),
+		strElem(t, tagPatientName, "TEST^PATIENT"),
+		strElem(t, tagPatientID, "PID1"),
+		uidElem(tagStudyUID, studyUID),
+		uidElem(tag.SeriesInstanceUID, seriesUID),
+	}}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := dicom.Write(f, ds); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
+}
+
+// runModifyWith runs the modify command over in → out with params as the
+// parsed command line, restoring the shared parse state afterwards.
+func runModifyWith(t *testing.T, in, out string, params map[string][]string) error {
+	t.Helper()
+	t.Cleanup(func() { parsed, Opts = nil, Options{} })
+	parsed = params
+	Opts = Options{Inputs: []string{in}, Output: out}
+	return runModify()
+}
+
+func TestRunModify_RemapUIDsRenamesPaths(t *testing.T) {
+	// Every source UID starts with root; a generated 2.25.<digits> UID cannot
+	// contain it, so its absence from a path proves no original UID survived.
+	const root = "1.3.6.1.4.1.99999"
+	study, series := root+".1", root+".1.2" // the study UID prefixes the series UID
+	in := t.TempDir()
+	sourceNames := []string{
+		series + ".3.1.dcm",
+		series + ".3.2",
+		"CT." + series + ".3.3.dcm",
+		"IM0004",
+	}
+	for i, name := range sourceNames {
+		writeTestDICOM(t, filepath.Join(in, study, series, name), study, series, fmt.Sprintf("%s.3.%d", series, i+1))
+	}
+
+	t.Run("directory with DICOMDIR", func(t *testing.T) {
+		out := filepath.Join(t.TempDir(), "out")
+		if err := runModifyWith(t, in, out, map[string][]string{"remapuids": {"true"}, "dicomdir": {"true"}}); err != nil {
+			t.Fatalf("runModify: %v", err)
+		}
+		kinds := map[string]bool{}
+		err := filepath.WalkDir(out, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || d.Name() == "DICOMDIR" {
+				return err
+			}
+			rel, _ := filepath.Rel(out, path)
+			if strings.Contains(rel, root) {
+				t.Errorf("output path %q still carries an original UID", rel)
+			}
+			ds, perr := dicom.ParseFile(path, nil)
+			if perr != nil {
+				t.Fatalf("parsing %s: %v", rel, perr)
+			}
+			get := func(tg tag.Tag) string { e, _ := ds.FindElementByTag(tg); return strValue(t, e) }
+			sop := get(tagSOPInstance)
+			// The folders carry this file's own remapped study and series UIDs.
+			if want := filepath.Join(get(tagStudyUID), get(tag.SeriesInstanceUID)); filepath.Dir(rel) != want {
+				t.Errorf("%q is in folder %q, want %q", rel, filepath.Dir(rel), want)
+			}
+			switch filepath.Base(rel) {
+			case sop + ".dcm":
+				kinds["uid.dcm"] = true
+			case sop:
+				kinds["uid"] = true
+			case "CT." + sop + ".dcm":
+				kinds["CT.uid.dcm"] = true
+			case "IM0004":
+				kinds["IM0004"] = true
+			default:
+				t.Errorf("unexpected output file %q (its SOP Instance UID is %s)", rel, sop)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(kinds) != len(sourceNames) {
+			t.Fatalf("output names matched %v, want one file of each source naming", kinds)
+		}
+
+		dd, err := dicom.ParseFile(filepath.Join(out, "DICOMDIR"), nil)
+		if err != nil {
+			t.Fatalf("parsing DICOMDIR: %v", err)
+		}
+		records, err := dd.FindElementByTag(tag.DirectoryRecordSequence)
+		if err != nil {
+			t.Fatalf("DICOMDIR has no directory records: %v", err)
+		}
+		images := 0
+		for _, item := range nestedItems(t, records) {
+			e := findTag(item, tag.ReferencedFileID)
+			if e == nil {
+				continue
+			}
+			images++
+			comps, _ := e.Value.GetValue().([]string)
+			ref := filepath.Join(comps...)
+			if strings.Contains(ref, root) {
+				t.Errorf("DICOMDIR references %q, which still carries an original UID", ref)
+			}
+			if _, serr := os.Stat(filepath.Join(out, ref)); serr != nil {
+				t.Errorf("DICOMDIR references %q, which does not exist: %v", ref, serr)
+			}
+		}
+		if images != len(sourceNames) {
+			t.Fatalf("DICOMDIR references %d files, want %d", images, len(sourceNames))
+		}
+	})
+
+	t.Run("zip", func(t *testing.T) {
+		out := filepath.Join(t.TempDir(), "out.zip")
+		if err := runModifyWith(t, in, out, map[string][]string{"remapuids": {"true"}, "zip": {"true"}}); err != nil {
+			t.Fatalf("runModify: %v", err)
+		}
+		zr, err := zip.OpenReader(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer zr.Close()
+		if len(zr.File) != len(sourceNames) {
+			t.Fatalf("zip has %d entries, want %d", len(zr.File), len(sourceNames))
+		}
+		dirs := map[string]bool{}
+		for _, f := range zr.File {
+			if strings.Contains(f.Name, root) {
+				t.Errorf("zip entry %q still carries an original UID", f.Name)
+			}
+			dirs[path.Dir(f.Name)] = true
+		}
+		if len(dirs) != 1 {
+			t.Fatalf("zip entries span folders %v, want the one renamed series folder", dirs)
+		}
+	})
+}
+
+func TestRunModify_RefusesUIDSuffix(t *testing.T) {
+	in := t.TempDir()
+	tests := []struct {
+		name  string
+		setup func(t *testing.T)
+		want  string
+	}{
+		{"command line", func(t *testing.T) {
+			parsed["uid"] = []string{"9999"}
+		}, "use remapuids:true"},
+		{"profile, inherited from its base", func(t *testing.T) {
+			cfg := ProfileConfig{
+				"legacy": {UIDSuffix: "9999"},
+				"child":  {Base: "legacy", Priv: true},
+			}
+			p, err := resolveProfile("child", cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed["profile"] = []string{"child"}
+			mergeProfile(p)
+		}, `profile "child" carries a "uid" entry`},
+		{"per-modality entry", func(t *testing.T) {
+			parsed["profile"] = []string{"mixed"}
+			mergeProfile(Profile{PerModality: map[string]Profile{"ct": {UIDSuffix: "5"}}})
+		}, "per-modality entry CT"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "out")
+			t.Cleanup(func() { parsed, Opts = nil, Options{} })
+			parsed = map[string][]string{"remapuids": {"true"}}
+			Opts = Options{Inputs: []string{in}, Output: out}
+			tt.setup(t)
+			err := runModify()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("runModify error = %v, want one containing %q", err, tt.want)
+			}
+			if _, serr := os.Stat(out); !os.IsNotExist(serr) {
+				t.Fatalf("a refused run created output %q", out)
+			}
+		})
 	}
 }
 
